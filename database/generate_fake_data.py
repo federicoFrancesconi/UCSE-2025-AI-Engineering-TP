@@ -11,7 +11,7 @@ python generate_fake_data.py [--users N] [--content N] [--actors N] [--views N] 
 
 import argparse
 import random
-from datetime import datetime, timedelta, date
+from datetime import timedelta, date
 from faker import Faker
 import psycopg2
 from psycopg2.extras import execute_batch

@@ -4,11 +4,10 @@ This tool validates, executes, and returns results from SQL queries.
 """
 
 import logging
-import re
 from textwrap import dedent
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 import psycopg2
-from psycopg2 import sql, Error as PostgresError
+from psycopg2 import Error as PostgresError
 import sqlparse
 from tabulate import tabulate
 
@@ -262,9 +261,22 @@ class SQLTool:
         if results["row_count"] == 0:
             return "✓ Query executed successfully but returned no results."
         
+        # Convert rows to handle NULL values properly
+        formatted_rows = []
+        for row in results["rows"]:
+            formatted_row = []
+            for cell in row:
+                if cell is None:
+                    formatted_row.append("NULL")
+                elif isinstance(cell, (int, float)):
+                    formatted_row.append(cell)
+                else:
+                    formatted_row.append(str(cell))
+            formatted_rows.append(formatted_row)
+        
         # Create table with tabulate
         table = tabulate(
-            results["rows"],
+            formatted_rows,
             headers=results["columns"],
             tablefmt="grid",
             maxcolwidths=50

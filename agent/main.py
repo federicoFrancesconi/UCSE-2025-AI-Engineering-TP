@@ -6,7 +6,6 @@ CLI interface for the SQL AI Agent.
 import os
 import sys
 import logging
-from pathlib import Path
 from textwrap import dedent
 from dotenv import load_dotenv
 from agent import SQLAgent

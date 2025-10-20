@@ -3,13 +3,11 @@ LangGraph-based SQL AI Agent for natural language to SQL translation.
 """
 
 import logging
-import os
 from textwrap import dedent
 from typing import TypedDict, Annotated, Sequence
 from langchain_community.llms import Ollama
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import Graph, StateGraph, END
-from langgraph.prebuilt import ToolExecutor
 import operator
 
 from sql_tool import SQLTool
@@ -51,13 +49,26 @@ class SQLAgent:
         self.sql_model = sql_model
         self.conversation_model = conversation_model
         
-        # Initialize LLMs
-        self.sql_llm = Ollama(
-            model=sql_model,
-            base_url=ollama_base_url,
-            temperature=0,
-            num_predict=500  # Allow longer SQL queries
-        )
+        # Initialize LLMs with model-specific optimizations
+        if 'phi3' in sql_model.lower():
+            # Phi3 optimizations: lower temperature, shorter context
+            self.sql_llm = Ollama(
+                model=sql_model,
+                base_url=ollama_base_url,
+                temperature=0,
+                num_predict=500,
+                top_k=5,
+                top_p=0.7,
+                repeat_penalty=1.0
+            )
+        else:
+            # SQLCoder and other models
+            self.sql_llm = Ollama(
+                model=sql_model,
+                base_url=ollama_base_url,
+                temperature=0,
+                num_predict=500  # Allow longer SQL queries
+            )
         
         self.conversation_llm = Ollama(
             model=conversation_model,
@@ -132,8 +143,70 @@ class SQLAgent:
         user_query = state['user_query'].strip()
         logger.info(f"Processing query: {user_query}")
         
-        # Create prompt for SQL generation following Ollama's recommended format for SQLCoder
-        system_prompt = dedent(f"""
+        # Detect model type and create appropriate prompt
+        if 'phi3' in self.sql_model.lower():
+            # Phi3 uses a specific prompt template with special tokens
+            system_prompt = self._create_phi3_prompt(user_query, schema)
+        elif 'sqlcoder' in self.sql_model.lower():
+            # SQLCoder uses ### Instructions format
+            system_prompt = self._create_sqlcoder_prompt(user_query, schema)
+        else:
+            # Default prompt for other models
+            system_prompt = self._create_default_prompt(user_query, schema)
+        
+        try:
+            # Generate SQL using the SQL-specialized model
+            logger.info(f"Calling SQL model: {self.sql_model}")
+            sql_query = self.sql_llm.invoke(system_prompt)
+            logger.info(f"Raw SQL response: {sql_query}")
+            
+            # Clean up the response
+            sql_query = self._clean_sql_response(sql_query)
+            
+            state["sql_query"] = sql_query
+            logger.info(f"Cleaned SQL: {sql_query}")
+            
+            if not sql_query:
+                error_msg = "SQL model returned empty response"
+                logger.error(error_msg)
+                state["error"] = error_msg
+            
+        except Exception as e:
+            error_msg = f"Error generating SQL: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            state["error"] = error_msg
+        
+        return state
+    
+    def _create_phi3_prompt(self, user_query: str, schema: str) -> str:
+        """Create prompt for Phi3 model using its specific template."""
+        return dedent(f"""
+            <|system|>
+            You are a PostgreSQL expert. Your task is to generate ONLY a valid PostgreSQL query.
+            
+            Rules:
+            - Use proper table and column names from the schema
+            - Every non-aggregated column in SELECT must be in GROUP BY
+            - Use COUNT(*) for counting, SUM() for totals, AVG() for averages
+            - For "top N" or "most X" queries: use ORDER BY with LIMIT
+            - Use proper JOIN syntax with foreign key relationships
+            - Generate ONLY the SQL query, no explanations or markdown
+            <|end|>
+            <|user|>
+            Question: {user_query}
+            
+            Database Schema:
+            {schema}
+            
+            Generate a PostgreSQL query to answer the question. Output ONLY the SQL query:
+            <|end|>
+            <|assistant|>
+            SELECT
+        """).strip()
+    
+    def _create_sqlcoder_prompt(self, user_query: str, schema: str) -> str:
+        """Create prompt for SQLCoder model using its recommended format."""
+        return dedent(f"""
             ### Instructions:
             Your task is to convert a question into a SQL query, given a PostgreSQL database schema.
             Adhere to these rules:
@@ -158,60 +231,71 @@ class SQLAgent:
             Based on your instructions, here is the SQL query I have generated to answer the question `{user_query}`:
             ```sql
         """).strip()
+    
+    def _create_default_prompt(self, user_query: str, schema: str) -> str:
+        """Create default prompt for general models."""
+        return dedent(f"""
+            You are a PostgreSQL expert. Generate ONLY a valid SQL query.
+            
+            Question: {user_query}
+            
+            Database Schema:
+            {schema}
+            
+            Generate a PostgreSQL query. Rules:
+            - Every non-aggregated column in SELECT must be in GROUP BY
+            - Use COUNT(*), SUM(), AVG() for aggregations
+            - Use ORDER BY with LIMIT for "top N" queries
+            - Output ONLY the SQL query, no explanations
+            
+            SQL Query:
+        """).strip()
+    
+    def _clean_sql_response(self, sql_query: str) -> str:
+        """Clean up SQL response from various model outputs."""
+        sql_query = sql_query.strip()
         
-        try:
-            # Generate SQL using the SQL-specialized model
-            logger.info(f"Calling SQL model: {self.sql_model}")
-            sql_query = self.sql_llm.invoke(system_prompt)
-            logger.info(f"Raw SQL response: {sql_query}")
-            
-            # Clean up the response
-            sql_query = sql_query.strip()
-            
-            # Remove markdown code blocks if present
-            if "```sql" in sql_query:
-                # Extract SQL from code block
-                start = sql_query.find("```sql") + 6
-                end = sql_query.find("```", start)
-                if end != -1:
-                    sql_query = sql_query[start:end]
-            elif "```" in sql_query:
-                # Remove any ``` markers
-                sql_query = sql_query.replace("```sql", "").replace("```", "")
-            
-            sql_query = sql_query.strip()
-            
-            # Remove trailing semicolon if present
-            while sql_query.endswith(";"):
-                sql_query = sql_query[:-1].strip()
-            
-            # Remove any trailing newlines or whitespace
-            sql_query = " ".join(sql_query.split())
-            
-            # Sometimes SQLCoder adds explanatory text - try to extract just the SELECT statement
-            if "\n\n" in sql_query or ". " in sql_query:
-                # Look for SELECT statement
-                lines = sql_query.split("\n")
-                for i, line in enumerate(lines):
-                    if line.strip().upper().startswith("SELECT"):
-                        # Take from SELECT to the end or until we hit explanatory text
-                        sql_query = " ".join(lines[i:])
-                        break
-            
-            state["sql_query"] = sql_query
-            logger.info(f"Cleaned SQL: {sql_query}")
-            
-            if not sql_query:
-                error_msg = "SQL model returned empty response"
-                logger.error(error_msg)
-                state["error"] = error_msg
-            
-        except Exception as e:
-            error_msg = f"Error generating SQL: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            state["error"] = error_msg
+        # Remove markdown code blocks if present
+        if "```sql" in sql_query:
+            # Extract SQL from code block
+            start = sql_query.find("```sql") + 6
+            end = sql_query.find("```", start)
+            if end != -1:
+                sql_query = sql_query[start:end]
+        elif "```" in sql_query:
+            # Remove any ``` markers
+            sql_query = sql_query.replace("```sql", "").replace("```", "")
         
-        return state
+        sql_query = sql_query.strip()
+        
+        # Remove trailing semicolon if present
+        while sql_query.endswith(";"):
+            sql_query = sql_query[:-1].strip()
+        
+        # Remove any trailing newlines or whitespace
+        sql_query = " ".join(sql_query.split())
+        
+        # Sometimes models add explanatory text - try to extract just the SELECT statement
+        if "\n\n" in sql_query or ". " in sql_query:
+            # Look for SELECT statement
+            lines = sql_query.split("\n")
+            for i, line in enumerate(lines):
+                if line.strip().upper().startswith("SELECT"):
+                    # Take from SELECT to the end or until we hit explanatory text
+                    sql_query = " ".join(lines[i:])
+                    break
+        
+        # Remove phi3-specific artifacts
+        if sql_query.startswith("SELECT"):
+            # Already starts with SELECT, good
+            pass
+        else:
+            # Try to find SELECT in the response
+            select_pos = sql_query.upper().find("SELECT")
+            if select_pos != -1:
+                sql_query = sql_query[select_pos:]
+        
+        return sql_query
     
     def _execute_sql(self, state: AgentState) -> AgentState:
         """
