@@ -124,42 +124,42 @@ INSERT INTO Actores (nombre, pais, fecha_nacimiento) VALUES
 
 INSERT INTO Contenido (titulo, id_tipo_contenido, id_genero, id_clasificacion, fecha_estreno, duracion_min) VALUES
 -- Películas
-('El Origen de los Sueños', 1, 5, 3, '2023-03-15', 148),
-('Corazones Perdidos', 1, 6, 2, '2023-05-20', 125),
-('La Última Frontera', 1, 1, 4, '2023-07-08', 156),
-('Risas en el Café', 1, 2, 1, '2023-02-14', 98),
-('El Misterio del Faro', 1, 10, 3, '2023-09-12', 134),
-('Aventuras en el Amazonas', 1, 9, 2, '2023-04-25', 142),
-('Terror Nocturno', 1, 4, 5, '2023-10-31', 105),
-('La Casa del Tiempo', 1, 5, 3, '2023-06-18', 128),
-('Amor en Primavera', 1, 6, 1, '2023-03-22', 112),
-('Persecución Extrema', 1, 7, 4, '2023-08-15', 118),
+('El Origen de los Sueños', 1, 5, 3, '1995-03-15', 148),
+('Corazones Perdidos', 1, 6, 2, '1998-05-20', 125),
+('La Última Frontera', 1, 1, 4, '2001-07-08', 156),
+('Risas en el Café', 1, 2, 1, '2004-02-14', 98),
+('El Misterio del Faro', 1, 10, 3, '2007-09-12', 134),
+('Aventuras en el Amazonas', 1, 9, 2, '2010-04-25', 142),
+('Terror Nocturno', 1, 4, 5, '2013-10-31', 105),
+('La Casa del Tiempo', 1, 5, 3, '2016-06-18', 128),
+('Amor en Primavera', 1, 6, 1, '2019-03-22', 112),
+('Persecución Extrema', 1, 7, 4, '2022-08-15', 118),
 
 -- Series
-('Detectives del Futuro', 2, 7, 3, '2023-01-10', 45),
-('Familias Modernas', 2, 2, 2, '2023-02-05', 30),
-('El Imperio del Crimen', 2, 3, 5, '2023-03-20', 55),
-('Historias de Miedo', 2, 4, 4, '2023-10-01', 40),
-('Aventuras Galácticas', 2, 5, 2, '2023-04-12', 50),
-('Secretos del Corazón', 2, 6, 3, '2023-05-08', 42),
-('La Academia de Espías', 2, 1, 3, '2023-06-25', 48),
-('Mundos Paralelos', 2, 5, 4, '2023-07-30', 52),
-('Comedia Central', 2, 2, 2, '2023-01-25', 25),
+('Detectives del Futuro', 2, 7, 3, '1996-01-10', 45),
+('Familias Modernas', 2, 2, 2, '1999-02-05', 30),
+('El Imperio del Crimen', 2, 3, 5, '2002-03-20', 55),
+('Historias de Miedo', 2, 4, 4, '2005-10-01', 40),
+('Aventuras Galácticas', 2, 5, 2, '2008-04-12', 50),
+('Secretos del Corazón', 2, 6, 3, '2011-05-08', 42),
+('La Academia de Espías', 2, 1, 3, '2014-06-25', 48),
+('Mundos Paralelos', 2, 5, 4, '2017-07-30', 52),
+('Comedia Central', 2, 2, 2, '2020-01-25', 25),
 ('El Último Detective', 2, 10, 4, '2023-09-05', 47),
 
 -- Documentales
-('Vida Salvaje de África', 3, 3, 1, '2023-04-20', 85),
-('Historia de la Humanidad', 3, 3, 2, '2023-06-10', 120),
-('Océanos Profundos', 3, 3, 1, '2023-08-22', 95),
-('Tecnología del Futuro', 3, 5, 2, '2023-05-15', 75),
-('Arte y Cultura', 3, 3, 1, '2023-07-12', 110),
+('Vida Salvaje de África', 3, 3, 1, '1997-04-20', 85),
+('Historia de la Humanidad', 3, 3, 2, '2000-06-10', 120),
+('Océanos Profundos', 3, 3, 1, '2003-08-22', 95),
+('Tecnología del Futuro', 3, 5, 2, '2006-05-15', 75),
+('Arte y Cultura', 3, 3, 1, '2009-07-12', 110),
 
 -- Especiales
-('Concierto de Estrellas', 4, 2, 1, '2023-12-31', 90),
-('Stand-up de Medianoche', 4, 2, 3, '2023-11-15', 65),
-('Festival de Animación', 4, 8, 1, '2023-08-05', 125),
-('Especial de Navidad', 4, 2, 1, '2023-12-25', 80),
-('Gala de Premios', 4, 2, 2, '2023-11-20', 150);
+('Concierto de Estrellas', 4, 2, 1, '2012-12-31', 90),
+('Stand-up de Medianoche', 4, 2, 3, '2015-11-15', 65),
+('Festival de Animación', 4, 8, 1, '2018-08-05', 125),
+('Especial de Navidad', 4, 2, 1, '2021-12-25', 80),
+('Gala de Premios', 4, 2, 2, '2024-11-20', 150);
 
 -- ============================================
 -- DATOS PARA CONTENIDO_ACTOR
