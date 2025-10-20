@@ -103,7 +103,19 @@ def main():
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     sql_model = os.getenv("SQL_MODEL", "llama3.2:7b")
     conversation_model = os.getenv("CONVERSATION_MODEL", "llama3.2:7b")
-
+    
+    # Load RAG configuration (optional)
+    rag_config = None
+    summaries_dir = os.getenv("SUMMARIES_DIR")
+    if summaries_dir and os.path.exists(summaries_dir):
+        rag_config = {
+            "summaries_dir": summaries_dir,
+            "embedding_model": os.getenv("EMBEDDING_MODEL", "nomic-embed-text"),
+            "chroma_db_dir": os.getenv("CHROMA_DB_DIR", "./chroma_db")
+        }
+        print(f"📚 RAG functionality enabled (summaries: {summaries_dir})")
+    else:
+        print("⚠️  RAG functionality disabled (summaries directory not found)")
     
     
     try:
@@ -113,7 +125,8 @@ def main():
             db_config=db_config,
             ollama_base_url=ollama_base_url,
             sql_model=sql_model,
-            conversation_model=conversation_model
+            conversation_model=conversation_model,
+            rag_config=rag_config
         )
         print("✅ Agent initialized successfully!\n")
         
@@ -148,9 +161,19 @@ def main():
             
             print_divisor()
             
+            # Show query type
+            if result.get("query_type"):
+                query_type_emoji = {
+                    "SQL": "💾",
+                    "RAG": "📚", 
+                    "HYBRID": "🔀"
+                }
+                emoji = query_type_emoji.get(result["query_type"], "❓")
+                print(f"\n{emoji} Query Type: {result['query_type']}\n")
+            
             # Show generated SQL
             if result.get("sql_query"):
-                print(f"\n📝 Generated SQL:\n")
+                print(f"📝 Generated SQL:\n")
                 print(f"   {result['sql_query']}\n")
             
             # Show response

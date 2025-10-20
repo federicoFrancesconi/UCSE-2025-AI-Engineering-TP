@@ -11,6 +11,7 @@ from langgraph.graph import Graph, StateGraph, END
 import operator
 
 from sql_tool import SQLTool
+from rag_tool import RAGTool
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,11 @@ class AgentState(TypedDict):
     """State of the agent graph."""
     messages: Annotated[Sequence[BaseMessage], operator.add]
     user_query: str
+    query_type: str  # 'SQL', 'RAG', or 'HYBRID'
     sql_query: str
     sql_results: dict
+    rag_results: dict
+    retrieved_docs: list
     formatted_response: str
     error: str
 
@@ -33,7 +37,8 @@ class SQLAgent:
         db_config: dict,
         ollama_base_url: str,
         sql_model: str,
-        conversation_model: str
+        conversation_model: str,
+        rag_config: dict = None
     ):
         """
         Initialize the SQL Agent.
@@ -43,11 +48,27 @@ class SQLAgent:
             ollama_base_url: Base URL for Ollama API
             sql_model: Model name for SQL generation
             conversation_model: Model name for conversation
+            rag_config: RAG configuration dictionary (optional)
         """
         self.sql_tool = SQLTool(db_config)
         self.ollama_base_url = ollama_base_url
         self.sql_model = sql_model
         self.conversation_model = conversation_model
+        
+        # Initialize RAG tool if config provided
+        self.rag_tool = None
+        if rag_config:
+            try:
+                self.rag_tool = RAGTool(
+                    summaries_dir=rag_config['summaries_dir'],
+                    ollama_base_url=ollama_base_url,
+                    embedding_model=rag_config['embedding_model'],
+                    chroma_db_dir=rag_config['chroma_db_dir']
+                )
+                logger.info("RAG functionality enabled")
+            except Exception as e:
+                logger.warning(f"RAG initialization failed, continuing without RAG: {e}")
+                self.rag_tool = None
         
         # Initialize LLMs with model-specific optimizations
         if 'phi3' in sql_model.lower():
@@ -87,8 +108,10 @@ class SQLAgent:
         
         # Add nodes
         workflow.add_node("understand_query", self._understand_query)
+        workflow.add_node("classify_query", self._classify_query)
         workflow.add_node("generate_sql", self._generate_sql)
         workflow.add_node("execute_sql", self._execute_sql)
+        workflow.add_node("retrieve_documents", self._retrieve_documents)
         workflow.add_node("format_response", self._format_response)
         workflow.add_node("handle_error", self._handle_error)
         
@@ -96,7 +119,20 @@ class SQLAgent:
         workflow.set_entry_point("understand_query")
         
         # Add edges
-        workflow.add_edge("understand_query", "generate_sql")
+        workflow.add_edge("understand_query", "classify_query")
+        
+        # Conditional routing based on query type
+        workflow.add_conditional_edges(
+            "classify_query",
+            self._route_query,
+            {
+                "sql": "generate_sql",
+                "rag": "retrieve_documents",
+                "hybrid": "generate_sql",  # For hybrid, do SQL first
+                "error": "handle_error"
+            }
+        )
+        
         workflow.add_conditional_edges(
             "generate_sql",
             self._check_sql_generation,
@@ -110,9 +146,11 @@ class SQLAgent:
             self._check_sql_execution,
             {
                 "format": "format_response",
+                "rag": "retrieve_documents",  # For hybrid queries
                 "error": "handle_error"
             }
         )
+        workflow.add_edge("retrieve_documents", "format_response")
         workflow.add_edge("format_response", END)
         workflow.add_edge("handle_error", END)
         
@@ -124,10 +162,104 @@ class SQLAgent:
         """
         logger.info(f"Understanding query: {state['user_query']}")
         
-        # For now, just pass through - can add query classification later
         state["messages"] = [HumanMessage(content=state["user_query"])]
         
         return state
+    
+    def _classify_query(self, state: AgentState) -> AgentState:
+        """
+        Node: Classify query as SQL, RAG, or HYBRID using LLM.
+        """
+        query = state['user_query']
+        logger.info(f"Classifying query: {query}")
+        
+        # If RAG is not available, default to SQL
+        if not self.rag_tool:
+            state['query_type'] = 'SQL'
+            logger.info("RAG not available, routing to SQL")
+            return state
+        
+        # Use LLM to classify the query
+        classification_prompt = dedent(f"""
+            You are a query classifier for a streaming platform database system with content summaries.
+            
+            Classify the following user query into ONE of these categories:
+            
+            **SQL**: ONLY statistics, counts, lists, or rankings WITHOUT asking for content descriptions
+            - "How many users?", "Average rating", "List top 10 movies", "Most viewed content"
+            - "Which movie is most viewed?", "Show me the highest rated series"
+            - Key: Just wants the NAME or DATA, not the plot/description
+            
+            **RAG**: ONLY content descriptions, plots, or themes of a SPECIFIC named content
+            - "What is Aventuras Galácticas about?", "Describe the plot of Terror Nocturno"
+            - "Tell me about El Misterio del Faro", "What's the theme of Amor en Primavera?"
+            - Key: Must mention a specific content name and ask about its description
+            
+            **HYBRID**: Needs BOTH database query (top/best/most) AND content descriptions (what it's about/plot)
+            - "What is the most viewed movie about?", "De qué trata la película más vista?"
+            - "Best rated sci-fi movies and their plots", "Top series and what they're about"
+            - "Tell me about the highest rated content", "Most popular movies with descriptions"
+            - Key: Combines superlatives (most/best/top/más) WITH description requests (about/trata/plot)
+            
+            CRITICAL RULES:
+            - If query asks "what is [superlative content] about?" → HYBRID (needs to find it first, then describe)
+            - If query asks "what is [specific name] about?" → RAG (already knows the name)
+            - If query just asks "which/what is the most X?" without description → SQL
+            
+            User Query: "{query}"
+            
+            Think step by step:
+            1. Does it ask for top/best/most/highest? If YES and also asks "about/plot/describe" → HYBRID
+            2. Does it mention a specific content name and ask about it? → RAG
+            3. Does it only ask for data/stats/names? → SQL
+            
+            Respond with ONLY ONE WORD: SQL, RAG, or HYBRID
+            Classification:""").strip()
+        
+        try:
+            # Create a simple LLM for classification (fast, low temperature)
+            classifier_llm = Ollama(
+                model=self.conversation_model,
+                base_url=self.ollama_base_url,
+                temperature=0,
+                num_predict=10  # We only need one word
+            )
+            
+            response = classifier_llm.invoke(classification_prompt).strip().upper()
+            
+            # Extract the classification (handle cases where LLM adds extra text)
+            if 'SQL' in response:
+                query_type = 'SQL'
+            elif 'RAG' in response:
+                query_type = 'RAG'
+            elif 'HYBRID' in response:
+                query_type = 'HYBRID'
+            else:
+                # Default to SQL if classification is unclear
+                logger.warning(f"Unclear classification response: {response}, defaulting to SQL")
+                query_type = 'SQL'
+            
+            state['query_type'] = query_type
+            logger.info(f"Query classified as: {query_type}")
+            
+        except Exception as e:
+            logger.error(f"Error in query classification: {e}, defaulting to SQL")
+            state['query_type'] = 'SQL'
+        
+        return state
+    
+    def _route_query(self, state: AgentState) -> str:
+        """Conditional edge: Route based on query classification."""
+        query_type = state.get('query_type', 'SQL')
+        
+        if query_type == 'SQL':
+            return 'sql'
+        elif query_type == 'RAG':
+            return 'rag'
+        elif query_type == 'HYBRID':
+            return 'hybrid'
+        else:
+            return 'error'
     
     def _generate_sql(self, state: AgentState) -> AgentState:
         """
@@ -319,34 +451,77 @@ class SQLAgent:
     
     def _format_response(self, state: AgentState) -> AgentState:
         """
-        Node: Format the SQL results into a natural language response.
+        Node: Format the results (SQL and/or RAG) into a natural language response.
         """
         logger.info("Formatting response")
         
         try:
-            # Format results as table
-            formatted_results = self.sql_tool.format_results(state["sql_results"])
+            query_type = state.get('query_type', 'SQL')
             
-            # Create conversational response
-            prompt = dedent(f"""
-                You are a helpful AI assistant for a streaming platform.
-
-                The user asked: "{state['user_query']}"
-
-                The following SQL query was executed:
-                {state['sql_query']}
-
+            # Build context based on available data
+            context_parts = []
+            
+            # Add SQL context if available
+            if state.get("sql_results") and state["sql_results"].get("success"):
+                formatted_results = self.sql_tool.format_results(state["sql_results"])
+                context_parts.append(f"""
+                SQL Query executed:
+                {state.get('sql_query', 'N/A')}
+                
                 Results:
                 {formatted_results}
-
-                Provide a brief, friendly summary of the results in natural language. Be concise but informative.
-                If there are many results, highlight the most relevant ones.
-
-                Response:
-            """).strip()
+                """)
+            
+            # Add RAG context if available
+            if state.get("retrieved_docs"):
+                docs = state["retrieved_docs"]
+                rag_info = state.get("rag_results", {})
+                metadatas = rag_info.get("metadatas", [])
+                similarities = rag_info.get("similarities", [])
+                
+                rag_context = "Content Information from PDFs:\n"
+                for i, (doc, meta, sim) in enumerate(zip(docs, metadatas, similarities), 1):
+                    title = meta.get('title', 'Unknown') if meta else 'Unknown'
+                    # Truncate long documents
+                    doc_preview = doc[:500] + "..." if len(doc) > 500 else doc
+                    rag_context += f"\n[{i}] {title} (relevance: {sim:.2f}):\n{doc_preview}\n"
+                
+                context_parts.append(rag_context)
+            
+            # Create the full context
+            full_context = "\n\n".join(context_parts)
+            
+            # Generate response based on query type
+            if query_type == 'RAG':
+                # RAG-only response
+                prompt = dedent(f"""
+                    You are a helpful AI assistant for a streaming platform.
+                    
+                    The user asked: "{state['user_query']}"
+                    
+                    {full_context}
+                    
+                    Provide a clear, informative answer based on the content information above.
+                    Be concise but include key details about the content.
+                    
+                    Response:
+                """).strip()
+            else:
+                # SQL or HYBRID response
+                prompt = dedent(f"""
+                    You are a helpful AI assistant for a streaming platform.
+    
+                    The user asked: "{state['user_query']}"
+    
+                    {full_context}
+    
+                    Provide a brief, friendly summary combining the information above.
+                    Be concise but informative. If there are many results, highlight the most relevant ones.
+    
+                    Response:
+                """).strip()
             
             conversation_response = self.conversation_llm.invoke(prompt)
-            
             state["formatted_response"] = conversation_response.strip()
             
         except Exception as e:
@@ -387,8 +562,54 @@ class SQLAgent:
         if state.get("error"):
             return "error"
         if state.get("sql_results") and state["sql_results"].get("success"):
+            # Check if this is a hybrid query that needs RAG
+            if state.get("query_type") == "HYBRID":
+                return "rag"
             return "format"
         return "error"
+    
+    def _retrieve_documents(self, state: AgentState) -> AgentState:
+        """
+        Node: Retrieve relevant documents using RAG.
+        """
+        logger.info("Retrieving documents via RAG")
+        
+        if not self.rag_tool:
+            error_msg = "RAG functionality not available"
+            logger.error(error_msg)
+            state["error"] = error_msg
+            return state
+        
+        try:
+            # Search for relevant documents
+            rag_results = self.rag_tool.search(state['user_query'], top_k=3)
+            state["rag_results"] = rag_results
+            
+            if rag_results["success"]:
+                state["retrieved_docs"] = rag_results["documents"]
+                logger.info(f"Retrieved {len(rag_results['documents'])} documents")
+            else:
+                # RAG failed - check if it was RAG-only query
+                if state.get("query_type") == "RAG":
+                    # For RAG-only queries, this is an error
+                    state["error"] = rag_results.get("error", "Failed to retrieve documents")
+                else:
+                    # For hybrid queries, continue without RAG
+                    logger.warning("RAG retrieval failed, continuing without RAG context")
+                    state["retrieved_docs"] = []
+                    
+        except Exception as e:
+            error_msg = f"Error retrieving documents: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            # Only fail for RAG-only queries
+            if state.get("query_type") == "RAG":
+                state["error"] = error_msg
+            else:
+                logger.warning("RAG failed for hybrid query, continuing with SQL only")
+                state["retrieved_docs"] = []
+        
+        return state
     
     def query(self, user_query: str) -> dict:
         """
@@ -406,8 +627,11 @@ class SQLAgent:
         initial_state = {
             "messages": [],
             "user_query": user_query,
+            "query_type": "",
             "sql_query": "",
             "sql_results": {},
+            "rag_results": {},
+            "retrieved_docs": [],
             "formatted_response": "",
             "error": ""
         }
@@ -417,7 +641,9 @@ class SQLAgent:
         
         return {
             "response": final_state.get("formatted_response", ""),
+            "query_type": final_state.get("query_type", ""),
             "sql_query": final_state.get("sql_query", ""),
             "results": final_state.get("sql_results", {}),
+            "rag_results": final_state.get("rag_results", {}),
             "error": final_state.get("error", "")
         }
