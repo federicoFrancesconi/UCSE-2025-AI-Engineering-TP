@@ -87,7 +87,6 @@ def print_divisor():
 
 def main():
     """Main CLI loop."""
-    # Print banner
     print_banner()
     
     # Load database configuration from environment
@@ -104,6 +103,9 @@ def main():
     sql_model = os.getenv("SQL_MODEL", "llama3.2:7b")
     conversation_model = os.getenv("CONVERSATION_MODEL", "llama3.2:7b")
     classifier_model = os.getenv("CLASSIFIER_MODEL", "phi3:mini")
+    
+    # Load classifier configuration
+    use_embeddings_classifier = os.getenv("CLASSIFIER_TYPE", "llm").lower() == "embeddings"
     
     # Load RAG configuration (optional)
     rag_config = None
@@ -128,7 +130,8 @@ def main():
             sql_model=sql_model,
             conversation_model=conversation_model,
             classifier_model=classifier_model,
-            rag_config=rag_config
+            rag_config=rag_config,
+            use_embeddings_classifier=use_embeddings_classifier
         )
         print("✅ Agent initialized successfully!\n")
         

@@ -4,12 +4,10 @@ LangGraph-based SQL AI Agent for natural language to SQL translation.
 
 import logging
 from textwrap import dedent
-from typing import TypedDict, Annotated, Sequence
+from typing import TypedDict
 from langchain_community.llms import Ollama
-from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import Graph, StateGraph, END
 from langchain_community.embeddings import OllamaEmbeddings
-import operator
 
 from sql_tool import SQLTool
 from rag_tool import RAGTool
@@ -19,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 class AgentState(TypedDict):
     """State of the agent graph."""
-    messages: Annotated[Sequence[BaseMessage], operator.add]
     user_query: str
     query_type: str  # 'SQL', 'RAG', or 'HYBRID'
     sql_query: str
@@ -33,6 +30,7 @@ class AgentState(TypedDict):
 class SQLAgent:
     """SQL AI Agent using LangGraph for orchestration."""
     
+    # ----------------- INITIALIZATION -----------------
     def __init__(
         self,
         db_config: dict,
@@ -40,7 +38,8 @@ class SQLAgent:
         sql_model: str,
         conversation_model: str,
         classifier_model: str = None,
-        rag_config: dict = None
+        rag_config: dict = None,
+        use_embeddings_classifier: bool = False
     ):
         """
         Initialize the SQL Agent.
@@ -52,12 +51,14 @@ class SQLAgent:
             conversation_model: Model name for conversation
             classifier_model: Model name for query classification (optional, defaults to conversation_model)
             rag_config: RAG configuration dictionary (optional)
+            use_embeddings_classifier: Whether to use embeddings-based classification (default: False, uses LLM)
         """
         self.sql_tool = SQLTool(db_config)
         self.ollama_base_url = ollama_base_url
         self.sql_model = sql_model
         self.conversation_model = conversation_model
         self.classifier_model = classifier_model if classifier_model else conversation_model
+        self.use_embeddings_classifier = use_embeddings_classifier
         
         # Initialize RAG tool
         self._init_rag_tool(rag_config, ollama_base_url)
@@ -68,10 +69,11 @@ class SQLAgent:
         # Build the graph
         self.graph = self._build_graph()
         
-        # Initialize query classification examples
-        self._init_classification_examples()
+        # Initialize query classification examples only if using embeddings classifier
+        if self.use_embeddings_classifier:
+            self._init_classification_examples()
         
-        logger.info(f"SQLAgent initialized with SQL model: {sql_model}, Conversation model: {conversation_model}, Classifier model: {self.classifier_model}")
+        logger.info(f"SQLAgent initialized with SQL model: {sql_model}, Conversation model: {conversation_model}, Classifier model: {self.classifier_model}, Use embeddings classifier: {self.use_embeddings_classifier}")
     
     def _init_rag_tool(self, rag_config: dict, ollama_base_url: str):
         # Initialize RAG tool if config provided
@@ -167,58 +169,48 @@ class SQLAgent:
                 "Top movies with summaries",
             ]
         }
-        
-        # Pre-compute embeddings for examples if RAG is available
-        # NOTE: This is only needed for the alternative embedding-based classifier (_classify_query_embeddings)
-        # Currently disabled since we're using LLM-based classification
-        self.example_embeddings = {}
-        # Uncomment below to enable embedding-based classification
-        # if self.rag_tool:
-        #     try:
-        #         from langchain_community.embeddings import OllamaEmbeddings
-        #         embeddings = OllamaEmbeddings(
-        #             model=self.rag_tool.embedding_model,
-        #             base_url=self.ollama_base_url
-        #         )
-        #         
-        #         for category, examples in self.classification_examples.items():
-        #             self.example_embeddings[category] = embeddings.embed_documents(examples)
-        #             logger.info(f"Pre-computed {len(examples)} embeddings for {category}")
-        #     except Exception as e:
-        #         logger.warning(f"Could not pre-compute embeddings: {e}")
-        #         self.example_embeddings = {}
+        # Pre-compute embeddings for examples
+        self._precompute_embeddings()
     
-    def _cosine_similarity(self, vec1, vec2):
-        """Calculate cosine similarity between two vectors."""
-        import math
-        dot_product = sum(a * b for a, b in zip(vec1, vec2))
-        magnitude1 = math.sqrt(sum(a * a for a in vec1))
-        magnitude2 = math.sqrt(sum(b * b for b in vec2))
-        
-        if magnitude1 == 0 or magnitude2 == 0:
-            return 0.0
-        
-        return dot_product / (magnitude1 * magnitude2)
+    def _precompute_embeddings(self):
+        # Pre-compute embeddings for examples
+        self.example_embeddings = {}
+        if self.rag_tool:
+            try:
+                from langchain_community.embeddings import OllamaEmbeddings
+                embeddings = OllamaEmbeddings(
+                    model=self.rag_tool.embedding_model,
+                    base_url=self.ollama_base_url
+                )
+                
+                for category, examples in self.classification_examples.items():
+                    self.example_embeddings[category] = embeddings.embed_documents(examples)
+                    logger.info(f"Pre-computed {len(examples)} embeddings for {category}")
+            except Exception as e:
+                logger.warning(f"Could not pre-compute embeddings: {e}")
+                self.example_embeddings = {}
+        else:
+            logger.warning("RAG tool not available, cannot pre-compute embeddings for classification")
     
     def _build_graph(self) -> Graph:
         """Build the LangGraph workflow."""
         workflow = StateGraph(AgentState)
         
+        # Choose classifier based on configuration
+        classifier_func = self._classify_query_embeddings if self.use_embeddings_classifier else self._classify_query
+        
         # Add nodes
-        workflow.add_node("understand_query", self._understand_query)
-        workflow.add_node("classify_query", self._classify_query)
+        workflow.add_node("classify_query", classifier_func)
         workflow.add_node("generate_sql", self._generate_sql)
         workflow.add_node("execute_sql", self._execute_sql)
         workflow.add_node("retrieve_documents", self._retrieve_documents)
         workflow.add_node("format_response", self._format_response)
         workflow.add_node("handle_error", self._handle_error)
         
-        # Set entry point
-        workflow.set_entry_point("understand_query")
+        # Set entry point directly to classification
+        workflow.set_entry_point("classify_query")
         
-        # Add edges
-        workflow.add_edge("understand_query", "classify_query")
-        
+        # Add edges (removed edge from understand_query)
         # Conditional routing based on query type
         workflow.add_conditional_edges(
             "classify_query",
@@ -254,16 +246,7 @@ class SQLAgent:
         
         return workflow.compile()
     
-    def _understand_query(self, state: AgentState) -> AgentState:
-        """
-        Node: Understand and validate the user query.
-        """
-        logger.info(f"Understanding query: {state['user_query']}")
-        
-        state["messages"] = [HumanMessage(content=state["user_query"])]
-        
-        return state
-    
+    # ----------------- QUERY CLASSIFICATION -----------------
     def _classify_query(self, state: AgentState) -> AgentState:
         """
         Node: Classify query as SQL, RAG, or HYBRID using LLM.
@@ -401,6 +384,18 @@ class SQLAgent:
             state['query_type'] = 'SQL'
         
         return state
+    
+    def _cosine_similarity(self, vec1, vec2):
+        """Calculate cosine similarity between two vectors."""
+        import math
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
+        
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
     
     def _route_query(self, state: AgentState) -> str:
         """Conditional edge: Route based on query classification."""
@@ -925,7 +920,6 @@ class SQLAgent:
         
         # Initialize state
         initial_state = {
-            "messages": [],
             "user_query": user_query,
             "query_type": "",
             "sql_query": "",
