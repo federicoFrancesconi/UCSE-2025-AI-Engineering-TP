@@ -8,6 +8,7 @@ from typing import TypedDict, Annotated, Sequence
 from langchain_community.llms import Ollama
 from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import Graph, StateGraph, END
+from langchain_community.embeddings import OllamaEmbeddings
 import operator
 
 from sql_tool import SQLTool
@@ -38,6 +39,7 @@ class SQLAgent:
         ollama_base_url: str,
         sql_model: str,
         conversation_model: str,
+        classifier_model: str = None,
         rag_config: dict = None
     ):
         """
@@ -48,13 +50,30 @@ class SQLAgent:
             ollama_base_url: Base URL for Ollama API
             sql_model: Model name for SQL generation
             conversation_model: Model name for conversation
+            classifier_model: Model name for query classification (optional, defaults to conversation_model)
             rag_config: RAG configuration dictionary (optional)
         """
         self.sql_tool = SQLTool(db_config)
         self.ollama_base_url = ollama_base_url
         self.sql_model = sql_model
         self.conversation_model = conversation_model
+        self.classifier_model = classifier_model if classifier_model else conversation_model
         
+        # Initialize RAG tool
+        self._init_rag_tool(rag_config, ollama_base_url)
+
+        # Initialize LLMs
+        self._init_models(sql_model, conversation_model, ollama_base_url)
+
+        # Build the graph
+        self.graph = self._build_graph()
+        
+        # Initialize query classification examples
+        self._init_classification_examples()
+        
+        logger.info(f"SQLAgent initialized with SQL model: {sql_model}, Conversation model: {conversation_model}, Classifier model: {self.classifier_model}")
+    
+    def _init_rag_tool(self, rag_config: dict, ollama_base_url: str):
         # Initialize RAG tool if config provided
         self.rag_tool = None
         if rag_config:
@@ -69,7 +88,8 @@ class SQLAgent:
             except Exception as e:
                 logger.warning(f"RAG initialization failed, continuing without RAG: {e}")
                 self.rag_tool = None
-        
+
+    def _init_models(self, sql_model: str, conversation_model: str, ollama_base_url: str):
         # Initialize LLMs with model-specific optimizations
         if 'phi3' in sql_model.lower():
             # Phi3 optimizations: lower temperature, shorter context
@@ -96,11 +116,89 @@ class SQLAgent:
             base_url=ollama_base_url,
             temperature=0.7
         )
+
+    def _init_classification_examples(self):
+        """Initialize example queries for embedding-based classification."""
+        self.classification_examples = {
+            'SQL': [
+                "¿Cuántos usuarios hay?",
+                "How many users are registered?",
+                "Dame el promedio de calificaciones",
+                "What's the average rating?",
+                "Lista los 10 contenidos más vistos",
+                "Show me the top 10 movies",
+                "¿Qué usuario tiene más visualizaciones?",
+                "Which content is most viewed?",
+                "Total de películas",
+                "Count the series",
+                "Highest rated content",
+                "Contenido mejor calificado",
+                "¿Cuál es la película más popular?",
+                "Most viewed series",
+            ],
+            'RAG': [
+                "¿De qué trata Aventuras Galácticas?",
+                "What is Aventuras Galácticas about?",
+                "Describe la trama de Terror Nocturno",
+                "Tell me about El Misterio del Faro",
+                "¿Cuál es el tema de Amor en Primavera?",
+                "What's the plot of La Casa del Tiempo?",
+                "Cuéntame sobre Historia de la Humanidad",
+                "Describe Mundos Paralelos",
+                "What is the story of Océanos Profundos?",
+                "Explícame de qué va Familias Modernas",
+                "What's Detectives del Futuro about?",
+                "Háblame sobre Aventuras en el Amazonas",
+            ],
+            'HYBRID': [
+                "¿De qué trata la película más vista?",
+                "What is the most viewed movie about?",
+                "Películas de ciencia ficción mejor calificadas con sus tramas",
+                "Best rated sci-fi movies and their plots",
+                "Top 5 películas populares y de qué tratan",
+                "Most popular movies and what they're about",
+                "Películas con rating mayor a 8 y sus descripciones",
+                "Tell me about the highest rated movie and its plot",
+                "Dame las películas de comedia más vistas y explícame de qué van",
+                "Show me top rated movies with descriptions",
+                "¿Cuál es la película mejor calificada y de qué trata?",
+                "Most watched movies and their plots",
+                "Mejor película y su descripción",
+                "Top movies with summaries",
+            ]
+        }
         
-        # Build the graph
-        self.graph = self._build_graph()
+        # Pre-compute embeddings for examples if RAG is available
+        # NOTE: This is only needed for the alternative embedding-based classifier (_classify_query_embeddings)
+        # Currently disabled since we're using LLM-based classification
+        self.example_embeddings = {}
+        # Uncomment below to enable embedding-based classification
+        # if self.rag_tool:
+        #     try:
+        #         from langchain_community.embeddings import OllamaEmbeddings
+        #         embeddings = OllamaEmbeddings(
+        #             model=self.rag_tool.embedding_model,
+        #             base_url=self.ollama_base_url
+        #         )
+        #         
+        #         for category, examples in self.classification_examples.items():
+        #             self.example_embeddings[category] = embeddings.embed_documents(examples)
+        #             logger.info(f"Pre-computed {len(examples)} embeddings for {category}")
+        #     except Exception as e:
+        #         logger.warning(f"Could not pre-compute embeddings: {e}")
+        #         self.example_embeddings = {}
+    
+    def _cosine_similarity(self, vec1, vec2):
+        """Calculate cosine similarity between two vectors."""
+        import math
+        dot_product = sum(a * b for a, b in zip(vec1, vec2))
+        magnitude1 = math.sqrt(sum(a * a for a in vec1))
+        magnitude2 = math.sqrt(sum(b * b for b in vec2))
         
-        logger.info(f"SQLAgent initialized with SQL model: {sql_model}, Conversation model: {conversation_model}")
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+        
+        return dot_product / (magnitude1 * magnitude2)
     
     def _build_graph(self) -> Graph:
         """Build the LangGraph workflow."""
@@ -171,7 +269,7 @@ class SQLAgent:
         Node: Classify query as SQL, RAG, or HYBRID using LLM.
         """
         query = state['user_query']
-        logger.info(f"Classifying query: {query}")
+        logger.info(f"Classifying query with LLM: {query}")
         
         # If RAG is not available, default to SQL
         if not self.rag_tool:
@@ -181,59 +279,56 @@ class SQLAgent:
         
         # Use LLM to classify the query
         classification_prompt = dedent(f"""
-            You are a query classifier for a streaming platform database system with content summaries.
+            <|system|>
+            Classify queries: SQL, RAG, or HYBRID.
             
-            Classify the following user query into ONE of these categories:
+            SQL - wants NAME/NUMBER/RANK only, no description:
+            "Most active user?" → SQL
+            "Película más vista" → SQL
+            "Top 10" → SQL
+            "Which is most viewed?" → SQL
             
-            **SQL**: ONLY statistics, counts, lists, or rankings WITHOUT asking for content descriptions
-            - "How many users?", "Average rating", "List top 10 movies", "Most viewed content"
-            - "Which movie is most viewed?", "Show me the highest rated series"
-            - Key: Just wants the NAME or DATA, not the plot/description
+            RAG - asks about SPECIFIC named content:
+            "What is Aventuras Galácticas about?" → RAG
+            "De qué trata Terror Nocturno?" → RAG
             
-            **RAG**: ONLY content descriptions, plots, or themes of a SPECIFIC named content
-            - "What is Aventuras Galácticas about?", "Describe the plot of Terror Nocturno"
-            - "Tell me about El Misterio del Faro", "What's the theme of Amor en Primavera?"
-            - Key: Must mention a specific content name and ask about its description
+            HYBRID - wants content ranking AND description (must have "content/" + "trata/about/describe"):
+            "De qué trata la película más vista?" → HYBRID
+            "What is the most viewed series about?" → HYBRID
+            "Tell me about the top rated película" → HYBRID
             
-            **HYBRID**: Needs BOTH database query (top/best/most) AND content descriptions (what it's about/plot)
-            - "What is the most viewed movie about?", "De qué trata la película más vista?"
-            - "Best rated sci-fi movies and their plots", "Top series and what they're about"
-            - "Tell me about the highest rated content", "Most popular movies with descriptions"
-            - Key: Combines superlatives (most/best/top/más) WITH description requests (about/trata/plot)
-            
-            CRITICAL RULES:
-            - If query asks "what is [superlative content] about?" → HYBRID (needs to find it first, then describe)
-            - If query asks "what is [specific name] about?" → RAG (already knows the name)
-            - If query just asks "which/what is the most X?" without description → SQL
-            
-            User Query: "{query}"
-            
-            Think step by step:
-            1. Does it ask for top/best/most/highest? If YES and also asks "about/plot/describe" → HYBRID
-            2. Does it mention a specific content name and ask about it? → RAG
-            3. Does it only ask for data/stats/names? → SQL
-            
-            Respond with ONLY ONE WORD: SQL, RAG, or HYBRID
+            Rules:
+            - NO "trata/about/describe" = SQL (even with "más/most")
+            - HYBRID only for content with description request
+            - Users/series/episodes asking for description = SQL (not in RAG)
+            <|end|>
+            <|user|>
+            Query: "{query}"
+            <|end|>
+            <|assistant|>
             Classification:""").strip()
         
         try:
             # Create a simple LLM for classification (fast, low temperature)
             classifier_llm = Ollama(
-                model=self.conversation_model,
+                model=self.classifier_model,
                 base_url=self.ollama_base_url,
                 temperature=0,
-                num_predict=10  # We only need one word
+                num_predict=6,  # Allow enough tokens for full word
+                top_k=3,
+                top_p=0.5,
+                repeat_penalty=1.0
             )
             
             response = classifier_llm.invoke(classification_prompt).strip().upper()
             
             # Extract the classification (handle cases where LLM adds extra text)
-            if 'SQL' in response:
-                query_type = 'SQL'
+            if 'HYBRID' in response:
+                query_type = 'HYBRID'
             elif 'RAG' in response:
                 query_type = 'RAG'
-            elif 'HYBRID' in response:
-                query_type = 'HYBRID'
+            elif 'SQL' in response:
+                query_type = 'SQL'
             else:
                 # Default to SQL if classification is unclear
                 logger.warning(f"Unclear classification response: {response}, defaulting to SQL")
@@ -244,6 +339,65 @@ class SQLAgent:
             
         except Exception as e:
             logger.error(f"Error in query classification: {e}, defaulting to SQL")
+            state['query_type'] = 'SQL'
+        
+        return state
+    
+    def _classify_query_embeddings(self, state: AgentState) -> AgentState:
+        """
+        Alternative classification method using embedding similarity.
+        This is kept as a backup/experimental approach.
+        To use this, replace the call in the graph from _classify_query to this method.
+        """
+        query = state['user_query']
+        logger.info(f"Classifying query with embeddings: {query}")
+        
+        # If RAG is not available, default to SQL
+        if not self.rag_tool or not self.example_embeddings:
+            state['query_type'] = 'SQL'
+            logger.info("RAG not available or embeddings not initialized, routing to SQL")
+            return state
+        
+        try:
+            # Get embedding for the input query
+            from langchain_community.embeddings import OllamaEmbeddings
+            embeddings = OllamaEmbeddings(
+                model=self.rag_tool.embedding_model,
+                base_url=self.ollama_base_url
+            )
+            
+            query_embedding = embeddings.embed_query(query)
+            
+            # Calculate similarity scores for each category
+            category_scores = {}
+            
+            for category, example_embeddings in self.example_embeddings.items():
+                # Calculate similarity with each example
+                similarities = [
+                    self._cosine_similarity(query_embedding, example_emb)
+                    for example_emb in example_embeddings
+                ]
+                
+                # Use max similarity as the category score
+                max_similarity = max(similarities) if similarities else 0.0
+                category_scores[category] = max_similarity
+                
+                logger.info(f"{category}: max_similarity={max_similarity:.4f}")
+            
+            # Select category with highest score
+            best_category = max(category_scores, key=category_scores.get)
+            best_score = category_scores[best_category]
+            
+            # Log detailed scores
+            logger.info(f"Similarity scores: {category_scores}")
+            logger.info(f"Best match: {best_category} (score: {best_score:.4f})")
+            
+            state['query_type'] = best_category
+            
+        except Exception as e:
+            logger.error(f"Error in embedding-based classification: {e}, defaulting to SQL")
+            import traceback
+            traceback.print_exc()
             state['query_type'] = 'SQL'
         
         return state
@@ -273,18 +427,19 @@ class SQLAgent:
         
         # Process user query - clean and prepare it
         user_query = state['user_query'].strip()
-        logger.info(f"Processing query: {user_query}")
+        query_type = state.get('query_type', 'SQL')
+        logger.info(f"Processing query: {user_query} (type: {query_type})")
         
         # Detect model type and create appropriate prompt
         if 'phi3' in self.sql_model.lower():
             # Phi3 uses a specific prompt template with special tokens
-            system_prompt = self._create_phi3_prompt(user_query, schema)
+            system_prompt = self._create_phi3_prompt(user_query, schema, query_type)
         elif 'sqlcoder' in self.sql_model.lower():
             # SQLCoder uses ### Instructions format
-            system_prompt = self._create_sqlcoder_prompt(user_query, schema)
+            system_prompt = self._create_sqlcoder_prompt(user_query, schema, query_type)
         else:
             # Default prompt for other models
-            system_prompt = self._create_default_prompt(user_query, schema)
+            system_prompt = self._create_default_prompt(user_query, schema, query_type)
         
         try:
             # Generate SQL using the SQL-specialized model
@@ -310,8 +465,14 @@ class SQLAgent:
         
         return state
     
-    def _create_phi3_prompt(self, user_query: str, schema: str) -> str:
+    def _create_phi3_prompt(self, user_query: str, schema: str, query_type: str = "SQL") -> str:
         """Create prompt for Phi3 model using its specific template."""
+        
+        # Add special instruction for HYBRID queries
+        hybrid_instruction = ""
+        if query_type == "HYBRID":
+            hybrid_instruction = "\n            - CRITICAL: ALWAYS include c.titulo (content title) in SELECT for ranking queries"
+        
         return dedent(f"""
             <|system|>
             You are a PostgreSQL expert. Your task is to generate ONLY a valid PostgreSQL query.
@@ -320,7 +481,7 @@ class SQLAgent:
             - Use proper table and column names from the schema
             - Every non-aggregated column in SELECT must be in GROUP BY
             - Use COUNT(*) for counting, SUM() for totals, AVG() for averages
-            - For "top N" or "most X" queries: use ORDER BY with LIMIT
+            - For "top N" or "most X" queries: use ORDER BY with LIMIT{hybrid_instruction}
             - Use proper JOIN syntax with foreign key relationships
             - Generate ONLY the SQL query, no explanations or markdown
             <|end|>
@@ -336,8 +497,14 @@ class SQLAgent:
             SELECT
         """).strip()
     
-    def _create_sqlcoder_prompt(self, user_query: str, schema: str) -> str:
+    def _create_sqlcoder_prompt(self, user_query: str, schema: str, query_type: str = "SQL") -> str:
         """Create prompt for SQLCoder model using its recommended format."""
+        
+        # Add special instruction for HYBRID queries
+        hybrid_instruction = ""
+        if query_type == "HYBRID":
+            hybrid_instruction = "\n            - **CRITICAL for ranking queries**: ALWAYS include c.titulo (content title) in SELECT clause"
+        
         return dedent(f"""
             ### Instructions:
             Your task is to convert a question into a SQL query, given a PostgreSQL database schema.
@@ -349,7 +516,7 @@ class SQLAgent:
               * If you SELECT c.titulo, c.id_contenido and use COUNT(*), you must GROUP BY c.titulo, c.id_contenido
               * If you SELECT c.titulo and use COUNT(*), you must GROUP BY c.titulo
             - Prefer simple queries over complex window functions when possible
-            - For "most viewed" or "most popular" queries, use COUNT(*), GROUP BY, ORDER BY, and LIMIT
+            - For "most viewed" or "most popular" queries, use COUNT(*), GROUP BY, ORDER BY, and LIMIT{hybrid_instruction}
             - Use COUNT(*) for counting rows, SUM() for totals, AVG() for averages
             - Generate ONLY valid PostgreSQL syntax
             - Do NOT include explanations, comments, or additional text after the SQL query
@@ -364,8 +531,14 @@ class SQLAgent:
             ```sql
         """).strip()
     
-    def _create_default_prompt(self, user_query: str, schema: str) -> str:
+    def _create_default_prompt(self, user_query: str, schema: str, query_type: str = "SQL") -> str:
         """Create default prompt for general models."""
+        
+        # Add special instruction for HYBRID queries
+        hybrid_instruction = ""
+        if query_type == "HYBRID":
+            hybrid_instruction = "\n            - CRITICAL: Include c.titulo (content title) in SELECT for ranking queries"
+        
         return dedent(f"""
             You are a PostgreSQL expert. Generate ONLY a valid SQL query.
             
@@ -377,7 +550,7 @@ class SQLAgent:
             Generate a PostgreSQL query. Rules:
             - Every non-aggregated column in SELECT must be in GROUP BY
             - Use COUNT(*), SUM(), AVG() for aggregations
-            - Use ORDER BY with LIMIT for "top N" queries
+            - Use ORDER BY with LIMIT for "top N" queries{hybrid_instruction}
             - Output ONLY the SQL query, no explanations
             
             SQL Query:
@@ -437,6 +610,20 @@ class SQLAgent:
         
         try:
             results = self.sql_tool.execute_query(state["sql_query"])
+            
+            # Convert rows to list of dictionaries for easier access
+            if results["success"] and results.get("columns") and results.get("rows"):
+                columns = results["columns"]
+                rows = results["rows"]
+                
+                # Convert to list of dicts
+                results["results"] = [
+                    dict(zip(columns, row)) for row in rows
+                ]
+                logger.info(f"Converted {len(results['results'])} rows to dictionary format")
+            else:
+                results["results"] = []
+            
             state["sql_results"] = results
             
             if not results["success"]:
@@ -571,6 +758,8 @@ class SQLAgent:
     def _retrieve_documents(self, state: AgentState) -> AgentState:
         """
         Node: Retrieve relevant documents using RAG.
+        For HYBRID queries: extracts content titles from SQL results and retrieves their PDFs.
+        For RAG queries: does semantic search based on user query.
         """
         logger.info("Retrieving documents via RAG")
         
@@ -581,8 +770,23 @@ class SQLAgent:
             return state
         
         try:
-            # Search for relevant documents
-            rag_results = self.rag_tool.search(state['user_query'], top_k=3)
+            query_type = state.get("query_type")
+            
+            # For HYBRID queries, extract titles from SQL results
+            if query_type == "HYBRID":
+                logger.info("HYBRID query detected - extracting content titles from SQL results")
+                titles = self._extract_titles_from_sql_results(state)
+                
+                if not titles:
+                    logger.warning("No titles found in SQL results, falling back to semantic search")
+                    rag_results = self.rag_tool.search(state['user_query'], top_k=3)
+                else:
+                    logger.info(f"Found {len(titles)} titles in SQL results: {titles}")
+                    rag_results = self._retrieve_documents_by_titles(titles)
+            else:
+                # For RAG-only queries, use semantic search
+                rag_results = self.rag_tool.search(state['user_query'], top_k=3)
+            
             state["rag_results"] = rag_results
             
             if rag_results["success"]:
@@ -610,6 +814,102 @@ class SQLAgent:
                 state["retrieved_docs"] = []
         
         return state
+    
+    def _extract_titles_from_sql_results(self, state: AgentState) -> list:
+        """
+        Extract content titles from SQL query results.
+        Looks for 'titulo' column in the results.
+        
+        Args:
+            state: Current agent state with SQL results
+            
+        Returns:
+            List of content titles
+        """
+        titles = []
+        
+        try:
+            sql_results = state.get("sql_results", {})
+            if not sql_results.get("success"):
+                return titles
+            
+            results = sql_results.get("results", [])
+            if not results:
+                return titles
+            
+            # Check if 'titulo' column exists in results
+            for row in results:
+                if isinstance(row, dict) and 'titulo' in row:
+                    title = row['titulo']
+                    if title:
+                        titles.append(str(title))
+                        logger.debug(f"Extracted title: {title}")
+            
+            logger.info(f"Extracted {len(titles)} titles from SQL results")
+            
+        except Exception as e:
+            logger.error(f"Error extracting titles from SQL results: {e}", exc_info=True)
+        
+        return titles
+    
+    def _retrieve_documents_by_titles(self, titles: list) -> dict:
+        """
+        Retrieve documents from RAG by specific content titles.
+        
+        Args:
+            titles: List of content titles to retrieve
+            
+        Returns:
+            Dictionary with success status, documents, and metadata (same format as rag_tool.search)
+        """
+        all_documents = []
+        all_metadatas = []
+        all_similarities = []
+        
+        for title in titles:
+            try:
+                # Try exact match first
+                result = self.rag_tool.get_document_by_title(title)
+                
+                if result["success"]:
+                    all_documents.append(result["document"])
+                    all_metadatas.append(result.get("metadata", {"title": title}))
+                    all_similarities.append(1.0)  # Exact match = 100% similarity
+                    logger.info(f"Found exact match for title: {title}")
+                else:
+                    # If exact match fails, try semantic search with the title
+                    logger.warning(f"Exact match failed for '{title}', trying semantic search")
+                    search_result = self.rag_tool.search(title, top_k=1)
+                    
+                    if search_result["success"] and search_result["documents"]:
+                        all_documents.extend(search_result["documents"])
+                        all_metadatas.extend(search_result["metadatas"])
+                        all_similarities.extend(search_result["similarities"])
+                        logger.info(f"Found semantic match for title: {title}")
+                    else:
+                        logger.warning(f"No match found for title: {title}")
+                        
+            except Exception as e:
+                logger.error(f"Error retrieving document for title '{title}': {e}", exc_info=True)
+                continue
+        
+        if all_documents:
+            return {
+                "success": True,
+                "documents": all_documents,
+                "metadatas": all_metadatas,
+                "similarities": all_similarities,
+                "count": len(all_documents)
+            }
+        else:
+            return {
+                "success": False,
+                "error": "No documents found for the specified titles",
+                "documents": [],
+                "metadatas": [],
+                "similarities": [],
+                "count": 0
+            }
     
     def query(self, user_query: str) -> dict:
         """

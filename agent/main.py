@@ -103,6 +103,7 @@ def main():
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     sql_model = os.getenv("SQL_MODEL", "llama3.2:7b")
     conversation_model = os.getenv("CONVERSATION_MODEL", "llama3.2:7b")
+    classifier_model = os.getenv("CLASSIFIER_MODEL", "phi3:mini")
     
     # Load RAG configuration (optional)
     rag_config = None
@@ -126,6 +127,7 @@ def main():
             ollama_base_url=ollama_base_url,
             sql_model=sql_model,
             conversation_model=conversation_model,
+            classifier_model=classifier_model,
             rag_config=rag_config
         )
         print("✅ Agent initialized successfully!\n")
