@@ -66,8 +66,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def initialize_agent():
-    """Initialize the SQL Agent with configuration from environment."""
+def check_groq_availability():
+    """Check if Groq API key is available."""
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    return groq_api_key is not None and len(groq_api_key.strip()) > 0
+
+
+def initialize_agent(model_provider="ollama"):
+    """
+    Initialize the SQL Agent with configuration from environment.
+    
+    Args:
+        model_provider: "ollama" or "groq"
+    """
     
     # Load database configuration
     db_config = {
@@ -78,8 +89,12 @@ def initialize_agent():
         "password": os.getenv("DB_PASSWORD")
     }
     
-    # Load model provider configuration
-    model_provider = os.getenv("MODEL_PROVIDER", "ollama").lower()
+    # Validate provider selection
+    model_provider = model_provider.lower()
+    if model_provider == "groq" and not check_groq_availability():
+        st.warning("⚠️ Groq API key not found. Falling back to Ollama.")
+        logger.warning("Groq selected but API key not available, falling back to Ollama")
+        model_provider = "ollama"
     
     # Load Ollama configuration
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -189,13 +204,58 @@ def main():
     if "pending_query" not in st.session_state:
         st.session_state.pending_query = None
     
-    if "agent" not in st.session_state:
+    if "selected_provider" not in st.session_state:
+        st.session_state.selected_provider = None
+    
+    if "show_switch_warning" not in st.session_state:
+        st.session_state.show_switch_warning = False
+    
+    if "switch_to_provider" not in st.session_state:
+        st.session_state.switch_to_provider = None
+    
+    # Pre-initialization: Provider selection screen
+    if st.session_state.selected_provider is None:
+        st.markdown("---")
+        st.markdown("### 🔧 Configuration")
+        st.markdown("Please select a model provider to get started:")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### 🖥️ Local (Ollama)")
+            st.markdown("- Uses local Ollama models")
+            st.markdown("- Free, no API key needed")
+            st.markdown("- Requires Ollama running")
+            if st.button("Use Ollama", type="primary", use_container_width=True):
+                st.session_state.selected_provider = "ollama"
+                st.rerun()
+        
+        with col2:
+            st.markdown("#### ☁️ Remote (Groq)")
+            st.markdown("- Uses Groq cloud API")
+            st.markdown("- Faster inference")
+            st.markdown("- Requires API key in .env")
+            
+            groq_available = check_groq_availability()
+            if not groq_available:
+                st.error("⚠️ Groq API key not found in .env")
+                if st.button("Use Groq (will fallback to Ollama)", use_container_width=True, disabled=True):
+                    pass
+            else:
+                if st.button("Use Groq", type="primary", use_container_width=True):
+                    st.session_state.selected_provider = "groq"
+                    st.rerun()
+        
+        st.stop()
+    
+    # Initialize agent with selected provider
+    if "agent" not in st.session_state or st.session_state.agent is None:
         with st.spinner("🔧 Initializing agent..."):
-            agent, model_provider = initialize_agent()
+            agent, model_provider = initialize_agent(st.session_state.selected_provider)
             if agent:
                 st.session_state.agent = agent
                 st.session_state.model_provider = model_provider
-                st.success(f"✅ Agent initialized! Using {model_provider} models")
+                st.success(f"✅ Agent initialized! Using {model_provider.upper()} models")
             else:
                 st.error("Failed to initialize agent. Please check your configuration.")
                 st.stop()
@@ -287,103 +347,167 @@ def main():
     if not user_input and chat_input:
         user_input = chat_input
     
+    # Process query only if we have new input
     if user_input:
-        # Add user message to chat
-        st.session_state.messages.append({"role": "user", "content": user_input})
+        # Ensure agent is initialized before processing
+        if st.session_state.agent is None:
+            st.error("Agent is not initialized. Please refresh the page.")
+            st.stop()
         
-        # Display user message
-        with st.chat_message("user"):
-            st.markdown(user_input)
-        
-        # Process query with agent
-        with st.chat_message("assistant"):
-            with st.spinner("🤔 Thinking..."):
-                try:
-                    result = st.session_state.agent.query(user_input)
-                    
-                    response = result.get("response", "No response generated.")
-                    
-                    # Display response
-                    st.markdown(response)
-                    
-                    # Display metadata
-                    metadata = {
-                        "query_type": result.get("query_type"),
-                        "sql_query": result.get("sql_query"),
-                        "results": result.get("results"),
-                        "rag_results": result.get("rag_results")
-                    }
-                    
-                    # Query type badge
-                    if metadata.get("query_type"):
-                        render_query_type_badge(metadata["query_type"])
-                    
-                    # SQL Query (collapsible)
-                    if metadata.get("sql_query"):
-                        with st.expander("📝 View SQL Query"):
-                            st.code(metadata["sql_query"], language="sql")
-                    
-                    # RAG Results (collapsible)
-                    if metadata.get("rag_results") and metadata["rag_results"].get("success"):
-                        rag = metadata["rag_results"]
-                        with st.expander(f"📚 View RAG Sources ({len(rag.get('documents', []))} documents)"):
-                            docs = rag.get("documents", [])
-                            metadatas = rag.get("metadatas", [])
-                            similarities = rag.get("similarities", [])
-                            
-                            for i, (doc, meta, sim) in enumerate(zip(docs, metadatas, similarities), 1):
-                                title = meta.get('title', 'Unknown') if meta else 'Unknown'
-                                st.markdown(f"**[{i}] {title}** (similarity: {sim:.2f})")
-                                st.text_area(
-                                    f"Content {i}",
-                                    doc[:500] + "..." if len(doc) > 500 else doc,
-                                    height=150,
-                                    key=f"doc_{i}_{hash(doc)}",
-                                    label_visibility="collapsed"
-                                )
-                    
-                    # Query Results Table (collapsible)
-                    if metadata.get("results") and metadata["results"].get("success"):
-                        results = metadata["results"]
-                        row_count = len(results.get("rows", []))
-                        with st.expander(f"📊 View Query Results ({row_count} rows)"):
-                            if results.get("columns") and results.get("rows"):
-                                import pandas as pd
-                                df = pd.DataFrame(results["rows"], columns=results["columns"])
-                                st.dataframe(df, use_container_width=True)
-                    
-                    # Copy response button
-                    if st.button("📋 Copy Response", key=f"copy_response_{hash(response)}"):
-                        st.code(response, language=None)
-                        st.toast("✅ Response displayed for copying!")
-                    
-                    # Add assistant message to chat history
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": response,
-                        "metadata": metadata
-                    })
-                    
-                except Exception as e:
-                    error_msg = f"❌ Error: {str(e)}"
-                    st.error(error_msg)
-                    logger.error(f"Query processing error: {str(e)}", exc_info=True)
-                    
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": error_msg
-                    })
+        # Check if this is a new message (not already in history)
+        # This prevents reprocessing on rerun
+        if not st.session_state.messages or st.session_state.messages[-1]["content"] != user_input or st.session_state.messages[-1]["role"] != "user":
+            # Add user message to chat
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            
+            # Display user message
+            with st.chat_message("user"):
+                st.markdown(user_input)
+            
+            # Process query with agent
+            with st.chat_message("assistant"):
+                with st.spinner("🤔 Thinking..."):
+                    try:
+                        result = st.session_state.agent.query(user_input)
+                        
+                        response = result.get("response", "No response generated.")
+                        
+                        # Display response
+                        st.markdown(response)
+                        
+                        # Display metadata
+                        metadata = {
+                            "query_type": result.get("query_type"),
+                            "sql_query": result.get("sql_query"),
+                            "results": result.get("results"),
+                            "rag_results": result.get("rag_results")
+                        }
+                        
+                        # Query type badge
+                        if metadata.get("query_type"):
+                            render_query_type_badge(metadata["query_type"])
+                        
+                        # SQL Query (collapsible)
+                        if metadata.get("sql_query"):
+                            with st.expander("📝 View SQL Query"):
+                                st.code(metadata["sql_query"], language="sql")
+                        
+                        # RAG Results (collapsible)
+                        if metadata.get("rag_results") and metadata["rag_results"].get("success"):
+                            rag = metadata["rag_results"]
+                            with st.expander(f"📚 View RAG Sources ({len(rag.get('documents', []))} documents)"):
+                                docs = rag.get("documents", [])
+                                metadatas = rag.get("metadatas", [])
+                                similarities = rag.get("similarities", [])
+                                
+                                for i, (doc, meta, sim) in enumerate(zip(docs, metadatas, similarities), 1):
+                                    title = meta.get('title', 'Unknown') if meta else 'Unknown'
+                                    st.markdown(f"**[{i}] {title}** (similarity: {sim:.2f})")
+                                    st.text_area(
+                                        f"Content {i}",
+                                        doc[:500] + "..." if len(doc) > 500 else doc,
+                                        height=150,
+                                        key=f"doc_{i}_{hash(doc)}",
+                                        label_visibility="collapsed"
+                                    )
+                        
+                        # Query Results Table (collapsible)
+                        if metadata.get("results") and metadata["results"].get("success"):
+                            results = metadata["results"]
+                            row_count = len(results.get("rows", []))
+                            with st.expander(f"📊 View Query Results ({row_count} rows)"):
+                                if results.get("columns") and results.get("rows"):
+                                    import pandas as pd
+                                    df = pd.DataFrame(results["rows"], columns=results["columns"])
+                                    st.dataframe(df, use_container_width=True)
+                        
+                        # Copy response button
+                        if st.button("📋 Copy Response", key=f"copy_response_{hash(response)}"):
+                            st.code(response, language=None)
+                            st.toast("✅ Response displayed for copying!")
+                        
+                        # Add assistant message to chat history
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": response,
+                            "metadata": metadata
+                        })
+                        
+                    except Exception as e:
+                        error_msg = f"❌ Error: {str(e)}"
+                        st.error(error_msg)
+                        logger.error(f"Query processing error: {str(e)}", exc_info=True)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": error_msg
+                        })
     
-    # Clear chat button in sidebar
+    # Sidebar
     with st.sidebar:
         st.markdown("### 🎛️ Controls")
+        
+        # Clear conversation button
         if st.button("🗑️ Clear Conversation", use_container_width=True):
             st.session_state.messages = []
             st.rerun()
         
         st.markdown("---")
+        
+        # Model provider switch
+        st.markdown("### 🔄 Model Provider")
+        current_provider = st.session_state.get('model_provider', 'unknown')
+        
+        if current_provider == "ollama":
+            st.info("🖥️ Currently using: **Local (Ollama)**")
+            
+            # Check if Groq is available
+            if check_groq_availability():
+                if st.button("Switch to Groq", use_container_width=True):
+                    # Show confirmation dialog using session state
+                    st.session_state.show_switch_warning = True
+                    st.session_state.switch_to_provider = "groq"
+                    st.rerun()
+            else:
+                st.caption("⚠️ Groq unavailable (no API key)")
+        
+        elif current_provider == "groq":
+            st.info("☁️ Currently using: **Remote (Groq)**")
+            
+            if st.button("Switch to Ollama", use_container_width=True):
+                # Show confirmation dialog using session state
+                st.session_state.show_switch_warning = True
+                st.session_state.switch_to_provider = "ollama"
+                st.rerun()
+        
+        # Handle provider switch warning
+        if st.session_state.get('show_switch_warning', False):
+            target_provider = st.session_state.get('switch_to_provider', 'ollama')
+            st.warning(f"⚠️ Switching to **{target_provider.upper()}** will clear your conversation history.")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Confirm", use_container_width=True):
+                    # Clear agent, conversation, and provider info
+                    st.session_state.agent = None
+                    st.session_state.model_provider = None
+                    st.session_state.messages = []
+                    st.session_state.selected_provider = target_provider
+                    st.session_state.show_switch_warning = False
+                    st.session_state.switch_to_provider = None
+                    st.rerun()
+            
+            with col2:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.show_switch_warning = False
+                    st.session_state.switch_to_provider = None
+                    st.rerun()
+        
+        st.markdown("---")
+        
+        # Info section
         st.markdown("### ℹ️ Info")
-        st.markdown(f"**Model Provider:** {st.session_state.get('model_provider', 'Unknown')}")
+        st.markdown(f"**Provider:** {current_provider.upper()}")
         st.markdown(f"**Messages:** {len(st.session_state.messages)}")
 
 
