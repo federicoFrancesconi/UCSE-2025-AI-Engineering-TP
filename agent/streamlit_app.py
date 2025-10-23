@@ -6,6 +6,7 @@ Streamlit GUI for the SQL AI Agent.
 import os
 import sys
 import logging
+import time
 import streamlit as st
 from dotenv import load_dotenv
 from agent import SQLAgent
@@ -213,6 +214,9 @@ def main():
     if "switch_to_provider" not in st.session_state:
         st.session_state.switch_to_provider = None
     
+    if "response_times" not in st.session_state:
+        st.session_state.response_times = []
+    
     # Pre-initialization: Provider selection screen
     if st.session_state.selected_provider is None:
         st.markdown("---")
@@ -292,6 +296,11 @@ def main():
                 if metadata.get("query_type"):
                     render_query_type_badge(metadata["query_type"])
                 
+                # Response time
+                if metadata.get("response_time"):
+                    response_time = metadata["response_time"]
+                    st.caption(f"⏱️ Response time: {response_time:.2f}s")
+                
                 # SQL Query (collapsible)
                 if metadata.get("sql_query"):
                     with st.expander("📝 View SQL Query"):
@@ -368,7 +377,11 @@ def main():
             with st.chat_message("assistant"):
                 with st.spinner("🤔 Thinking..."):
                     try:
+                        # Track response time
+                        start_time = time.time()
                         result = st.session_state.agent.query(user_input)
+                        end_time = time.time()
+                        response_time = end_time - start_time
                         
                         response = result.get("response", "No response generated.")
                         
@@ -380,12 +393,18 @@ def main():
                             "query_type": result.get("query_type"),
                             "sql_query": result.get("sql_query"),
                             "results": result.get("results"),
-                            "rag_results": result.get("rag_results")
+                            "rag_results": result.get("rag_results"),
+                            "response_time": response_time
                         }
                         
                         # Query type badge
                         if metadata.get("query_type"):
                             render_query_type_badge(metadata["query_type"])
+                        
+                        # Response time
+                        if metadata.get("response_time"):
+                            response_time = metadata["response_time"]
+                            st.caption(f"⏱️ Response time: {response_time:.2f}s")
                         
                         # SQL Query (collapsible)
                         if metadata.get("sql_query"):
@@ -433,6 +452,9 @@ def main():
                             "metadata": metadata
                         })
                         
+                        # Track response time for statistics
+                        st.session_state.response_times.append(response_time)
+                        
                     except Exception as e:
                         error_msg = f"❌ Error: {str(e)}"
                         st.error(error_msg)
@@ -450,6 +472,7 @@ def main():
         # Clear conversation button
         if st.button("🗑️ Clear Conversation", use_container_width=True):
             st.session_state.messages = []
+            st.session_state.response_times = []
             st.rerun()
         
         st.markdown("---")
@@ -492,6 +515,7 @@ def main():
                     st.session_state.agent = None
                     st.session_state.model_provider = None
                     st.session_state.messages = []
+                    st.session_state.response_times = []
                     st.session_state.selected_provider = target_provider
                     st.session_state.show_switch_warning = False
                     st.session_state.switch_to_provider = None
@@ -508,7 +532,18 @@ def main():
         # Info section
         st.markdown("### ℹ️ Info")
         st.markdown(f"**Provider:** {current_provider.upper()}")
-        st.markdown(f"**Messages:** {len(st.session_state.messages)}")
+        
+        # Count only user messages (queries)
+        query_count = len([msg for msg in st.session_state.messages if msg["role"] == "user"])
+        st.markdown(f"**Queries:** {query_count}")
+        
+        # Response time statistics
+        if st.session_state.response_times:
+            avg_time = sum(st.session_state.response_times) / len(st.session_state.response_times)
+            min_time = min(st.session_state.response_times)
+            max_time = max(st.session_state.response_times)
+            st.markdown(f"**Avg Response:** {avg_time:.2f}s")
+            st.caption(f"Min: {min_time:.2f}s | Max: {max_time:.2f}s")
 
 
 if __name__ == "__main__":
