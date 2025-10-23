@@ -98,11 +98,20 @@ def main():
         "password": os.getenv("DB_PASSWORD")
     }
     
+    # Load model provider configuration
+    model_provider = os.getenv("MODEL_PROVIDER", "ollama").lower()
+    
     # Load Ollama configuration
     ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     sql_model = os.getenv("SQL_MODEL", "llama3.2:7b")
     conversation_model = os.getenv("CONVERSATION_MODEL", "llama3.2:7b")
     classifier_model = os.getenv("CLASSIFIER_MODEL", "phi3:mini")
+    
+    # Load Groq configuration
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    groq_sql_model = os.getenv("GROQ_SQL_MODEL", "llama-3.1-8b-instant")
+    groq_conversation_model = os.getenv("GROQ_CONVERSATION_MODEL", "llama-3.1-8b-instant")
+    groq_classifier_model = os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
     
     # Load classifier configuration
     use_embeddings_classifier = os.getenv("CLASSIFIER_TYPE", "llm").lower() == "embeddings"
@@ -120,6 +129,11 @@ def main():
     else:
         print("⚠️  RAG functionality disabled (summaries directory not found)")
     
+    # Display model provider information
+    if model_provider == "groq":
+        print(f"☁️  Using Groq cloud models (SQL: {groq_sql_model})")
+    else:
+        print(f"🖥️  Using local Ollama models (SQL: {sql_model})")
     
     try:
         # Initialize agent
@@ -131,7 +145,12 @@ def main():
             conversation_model=conversation_model,
             classifier_model=classifier_model,
             rag_config=rag_config,
-            use_embeddings_classifier=use_embeddings_classifier
+            use_embeddings_classifier=use_embeddings_classifier,
+            model_provider=model_provider,
+            groq_api_key=groq_api_key,
+            groq_sql_model=groq_sql_model,
+            groq_conversation_model=groq_conversation_model,
+            groq_classifier_model=groq_classifier_model
         )
         print("✅ Agent initialized successfully!\n")
         

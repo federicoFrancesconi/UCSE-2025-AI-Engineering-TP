@@ -14,6 +14,7 @@ faker==19.6.2                   # Generate fake data for testing
 langgraph==0.2.28               # LangGraph orchestration framework
 langchain==0.3.1                # LangChain core
 langchain-community==0.3.1      # LangChain community integrations
+langchain-groq==0.2.0           # Groq cloud API integration
 python-dotenv==1.0.0            # Environment variable management
 sqlparse==0.4.4                 # SQL parsing and validation
 tabulate==0.9.0                 # Pretty-print tabular data

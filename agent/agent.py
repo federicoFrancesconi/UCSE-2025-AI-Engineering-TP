@@ -6,6 +6,7 @@ import logging
 from textwrap import dedent
 from typing import TypedDict
 from langchain_community.llms import Ollama
+from langchain_groq import ChatGroq
 from langgraph.graph import Graph, StateGraph, END
 from langchain_community.embeddings import OllamaEmbeddings
 
@@ -39,7 +40,12 @@ class SQLAgent:
         conversation_model: str,
         classifier_model: str = None,
         rag_config: dict = None,
-        use_embeddings_classifier: bool = False
+        use_embeddings_classifier: bool = False,
+        model_provider: str = "ollama",
+        groq_api_key: str = None,
+        groq_sql_model: str = None,
+        groq_conversation_model: str = None,
+        groq_classifier_model: str = None
     ):
         """
         Initialize the SQL Agent.
@@ -47,11 +53,16 @@ class SQLAgent:
         Args:
             db_config: Database configuration dictionary
             ollama_base_url: Base URL for Ollama API
-            sql_model: Model name for SQL generation
-            conversation_model: Model name for conversation
-            classifier_model: Model name for query classification (optional, defaults to conversation_model)
+            sql_model: Model name for SQL generation (Ollama)
+            conversation_model: Model name for conversation (Ollama)
+            classifier_model: Model name for query classification (Ollama, optional, defaults to conversation_model)
             rag_config: RAG configuration dictionary (optional)
             use_embeddings_classifier: Whether to use embeddings-based classification (default: False, uses LLM)
+            model_provider: 'ollama' for local models or 'groq' for remote cloud models (default: 'ollama')
+            groq_api_key: API key for Groq (required if model_provider='groq')
+            groq_sql_model: Model name for SQL generation on Groq (default: llama-3.1-8b-instant)
+            groq_conversation_model: Model name for conversation on Groq (default: llama-3.1-8b-instant)
+            groq_classifier_model: Model name for classification on Groq (default: llama-3.1-8b-instant)
         """
         self.sql_tool = SQLTool(db_config)
         self.ollama_base_url = ollama_base_url
@@ -60,11 +71,18 @@ class SQLAgent:
         self.classifier_model = classifier_model if classifier_model else conversation_model
         self.use_embeddings_classifier = use_embeddings_classifier
         
+        # Model provider configuration
+        self.model_provider = model_provider.lower()
+        self.groq_api_key = groq_api_key
+        self.groq_sql_model = groq_sql_model or "llama-3.1-8b-instant"
+        self.groq_conversation_model = groq_conversation_model or "llama-3.1-8b-instant"
+        self.groq_classifier_model = groq_classifier_model or "llama-3.1-8b-instant"
+        
         # Initialize RAG tool
         self._init_rag_tool(rag_config, ollama_base_url)
 
         # Initialize LLMs
-        self._init_models(sql_model, conversation_model, ollama_base_url)
+        self._init_models()
 
         # Build the graph
         self.graph = self._build_graph()
@@ -73,7 +91,7 @@ class SQLAgent:
         if self.use_embeddings_classifier:
             self._init_classification_examples()
         
-        logger.info(f"SQLAgent initialized with SQL model: {sql_model}, Conversation model: {conversation_model}, Classifier model: {self.classifier_model}, Use embeddings classifier: {self.use_embeddings_classifier}")
+        logger.info(f"SQLAgent initialized with provider: {self.model_provider}, SQL model: {sql_model if self.model_provider == 'ollama' else self.groq_sql_model}, Conversation model: {conversation_model if self.model_provider == 'ollama' else self.groq_conversation_model}, Classifier model: {self.classifier_model if self.model_provider == 'ollama' else self.groq_classifier_model}, Use embeddings classifier: {self.use_embeddings_classifier}")
     
     def _init_rag_tool(self, rag_config: dict, ollama_base_url: str):
         # Initialize RAG tool if config provided
@@ -91,33 +109,78 @@ class SQLAgent:
                 logger.warning(f"RAG initialization failed, continuing without RAG: {e}")
                 self.rag_tool = None
 
-    def _init_models(self, sql_model: str, conversation_model: str, ollama_base_url: str):
-        # Initialize LLMs with model-specific optimizations
-        if 'phi3' in sql_model.lower():
-            # Phi3 optimizations: lower temperature, shorter context
-            self.sql_llm = Ollama(
-                model=sql_model,
-                base_url=ollama_base_url,
+    def _init_models(self):
+        """Initialize LLMs based on the selected provider (Ollama or Groq)."""
+        if self.model_provider == "groq":
+            # Initialize Groq models
+            if not self.groq_api_key:
+                raise ValueError("Groq API key is required when using model_provider='groq'")
+            
+            logger.info(f"Initializing Groq models: SQL={self.groq_sql_model}, Conversation={self.groq_conversation_model}, Classifier={self.groq_classifier_model}")
+            
+            # SQL model for query generation (low temperature for precision)
+            self.sql_llm = ChatGroq(
+                api_key=self.groq_api_key,
+                model=self.groq_sql_model,
                 temperature=0,
-                num_predict=500,
-                top_k=5,
-                top_p=0.7,
+                max_tokens=500
+            )
+            
+            # Conversation model for response generation (higher temperature for natural language)
+            self.conversation_llm = ChatGroq(
+                api_key=self.groq_api_key,
+                model=self.groq_conversation_model,
+                temperature=0.7,
+                max_tokens=1000
+            )
+            
+            # Classifier model for query type classification (low temperature for consistency)
+            self.classifier_llm = ChatGroq(
+                api_key=self.groq_api_key,
+                model=self.groq_classifier_model,
+                temperature=0,
+                max_tokens=10
+            )
+            
+        else:
+            # Initialize Ollama models with model-specific optimizations
+            logger.info(f"Initializing Ollama models: SQL={self.sql_model}, Conversation={self.conversation_model}, Classifier={self.classifier_model}")
+            
+            if 'phi3' in self.sql_model.lower():
+                # Phi3 optimizations: lower temperature, shorter context
+                self.sql_llm = Ollama(
+                    model=self.sql_model,
+                    base_url=self.ollama_base_url,
+                    temperature=0,
+                    num_predict=500,
+                    top_k=5,
+                    top_p=0.7,
+                    repeat_penalty=1.0
+                )
+            else:
+                # SQLCoder and other models
+                self.sql_llm = Ollama(
+                    model=self.sql_model,
+                    base_url=self.ollama_base_url,
+                    temperature=0,
+                    num_predict=500  # Allow longer SQL queries
+                )
+            
+            self.conversation_llm = Ollama(
+                model=self.conversation_model,
+                base_url=self.ollama_base_url,
+                temperature=0.7
+            )
+            
+            self.classifier_llm = Ollama(
+                model=self.classifier_model,
+                base_url=self.ollama_base_url,
+                temperature=0,
+                num_predict=6,
+                top_k=3,
+                top_p=0.5,
                 repeat_penalty=1.0
             )
-        else:
-            # SQLCoder and other models
-            self.sql_llm = Ollama(
-                model=sql_model,
-                base_url=ollama_base_url,
-                temperature=0,
-                num_predict=500  # Allow longer SQL queries
-            )
-        
-        self.conversation_llm = Ollama(
-            model=conversation_model,
-            base_url=ollama_base_url,
-            temperature=0.7
-        )
 
     def _init_classification_examples(self):
         """Initialize example queries for embedding-based classification."""
@@ -260,50 +323,70 @@ class SQLAgent:
             logger.info("RAG not available, routing to SQL")
             return state
         
-        # Use LLM to classify the query
-        classification_prompt = dedent(f"""
-            <|system|>
-            Classify queries: SQL, RAG, or HYBRID.
-            
-            SQL - wants NAME/NUMBER/RANK only, no description:
-            "Most active user?" → SQL
-            "Película más vista" → SQL
-            "Top 10" → SQL
-            "Which is most viewed?" → SQL
-            
-            RAG - asks about SPECIFIC named content:
-            "What is Aventuras Galácticas about?" → RAG
-            "De qué trata Terror Nocturno?" → RAG
-            
-            HYBRID - wants content ranking AND description (must have "content/" + "trata/about/describe"):
-            "De qué trata la película más vista?" → HYBRID
-            "What is the most viewed series about?" → HYBRID
-            "Tell me about the top rated película" → HYBRID
-            
-            Rules:
-            - NO "trata/about/describe" = SQL (even with "más/most")
-            - HYBRID only for content with description request
-            - Users/series/episodes asking for description = SQL (not in RAG)
-            <|end|>
-            <|user|>
-            Query: "{query}"
-            <|end|>
-            <|assistant|>
-            Classification:""").strip()
+        # Use LLM to classify the query - format depends on provider
+        if self.model_provider == "groq":
+            # Simpler format for chat models
+            classification_prompt = dedent(f"""
+                Classify this query as SQL, RAG, or HYBRID.
+                
+                SQL - wants NAME/NUMBER/RANK only, no description:
+                "Most active user?" → SQL
+                "Película más vista" → SQL
+                "Top 10" → SQL
+                
+                RAG - asks about SPECIFIC named content:
+                "What is Aventuras Galácticas about?" → RAG
+                "De qué trata Terror Nocturno?" → RAG
+                
+                HYBRID - wants content ranking AND description:
+                "De qué trata la película más vista?" → HYBRID
+                "What is the most viewed series about?" → HYBRID
+                
+                Query: "{query}"
+                
+                Answer with ONLY one word: SQL, RAG, or HYBRID
+            """).strip()
+        else:
+            # Format for Ollama models with special tokens
+            classification_prompt = dedent(f"""
+                <|system|>
+                Classify queries: SQL, RAG, or HYBRID.
+                
+                SQL - wants NAME/NUMBER/RANK only, no description:
+                "Most active user?" → SQL
+                "Película más vista" → SQL
+                "Top 10" → SQL
+                "Which is most viewed?" → SQL
+                
+                RAG - asks about SPECIFIC named content:
+                "What is Aventuras Galácticas about?" → RAG
+                "De qué trata Terror Nocturno?" → RAG
+                
+                HYBRID - wants content ranking AND description (must have "content/" + "trata/about/describe"):
+                "De qué trata la película más vista?" → HYBRID
+                "What is the most viewed series about?" → HYBRID
+                "Tell me about the top rated película" → HYBRID
+                
+                Rules:
+                - NO "trata/about/describe" = SQL (even with "más/most")
+                - HYBRID only for content with description request
+                - Users/series/episodes asking for description = SQL (not in RAG)
+                <|end|>
+                <|user|>
+                Query: "{query}"
+                <|end|>
+                <|assistant|>
+                Classification:""").strip()
         
         try:
-            # Create a simple LLM for classification (fast, low temperature)
-            classifier_llm = Ollama(
-                model=self.classifier_model,
-                base_url=self.ollama_base_url,
-                temperature=0,
-                num_predict=6,  # Allow enough tokens for full word
-                top_k=3,
-                top_p=0.5,
-                repeat_penalty=1.0
-            )
+            # Use the pre-initialized classifier LLM
+            response = self.classifier_llm.invoke(classification_prompt)
             
-            response = classifier_llm.invoke(classification_prompt).strip().upper()
+            # Handle both string responses and ChatGroq message objects
+            if hasattr(response, 'content'):
+                response = response.content.strip().upper()
+            else:
+                response = response.strip().upper()
             
             # Extract the classification (handle cases where LLM adds extra text)
             if 'HYBRID' in response:
@@ -426,7 +509,10 @@ class SQLAgent:
         logger.info(f"Processing query: {user_query} (type: {query_type})")
         
         # Detect model type and create appropriate prompt
-        if 'phi3' in self.sql_model.lower():
+        if self.model_provider == "groq":
+            # Groq uses chat models, use a clean format
+            system_prompt = self._create_phi3_prompt(user_query, schema, query_type)
+        elif 'phi3' in self.sql_model.lower():
             # Phi3 uses a specific prompt template with special tokens
             system_prompt = self._create_phi3_prompt(user_query, schema, query_type)
         elif 'sqlcoder' in self.sql_model.lower():
@@ -438,8 +524,16 @@ class SQLAgent:
         
         try:
             # Generate SQL using the SQL-specialized model
-            logger.info(f"Calling SQL model: {self.sql_model}")
+            model_name = self.groq_sql_model if self.model_provider == "groq" else self.sql_model
+            logger.info(f"Calling SQL model: {model_name}")
             sql_query = self.sql_llm.invoke(system_prompt)
+            
+            # Handle both string responses and ChatGroq message objects
+            if hasattr(sql_query, 'content'):
+                sql_query = sql_query.content
+            else:
+                sql_query = str(sql_query)
+            
             logger.info(f"Raw SQL response: {sql_query}")
             
             # Clean up the response
@@ -468,6 +562,28 @@ class SQLAgent:
         if query_type == "HYBRID":
             hybrid_instruction = "\n            - CRITICAL: ALWAYS include c.titulo (content title) in SELECT for ranking queries"
         
+        # For Groq (chat models), use a simpler format
+        if self.model_provider == "groq":
+            return dedent(f"""
+                You are a PostgreSQL expert. Generate ONLY a valid PostgreSQL query.
+                
+                Question: {user_query}
+                
+                Database Schema:
+                {schema}
+                
+                Rules:
+                - Use proper table and column names from the schema
+                - Every non-aggregated column in SELECT must be in GROUP BY
+                - Use COUNT(*) for counting, SUM() for totals, AVG() for averages
+                - For "top N" or "most X" queries: use ORDER BY with LIMIT{hybrid_instruction}
+                - Use proper JOIN syntax with foreign key relationships
+                - Generate ONLY the SQL query, no explanations or markdown
+                
+                SQL Query:
+            """).strip()
+        
+        # For Ollama Phi3, use the specific template with tokens
         return dedent(f"""
             <|system|>
             You are a PostgreSQL expert. Your task is to generate ONLY a valid PostgreSQL query.
@@ -704,6 +820,13 @@ class SQLAgent:
                 """).strip()
             
             conversation_response = self.conversation_llm.invoke(prompt)
+            
+            # Handle both string responses and ChatGroq message objects
+            if hasattr(conversation_response, 'content'):
+                conversation_response = conversation_response.content
+            else:
+                conversation_response = str(conversation_response)
+            
             state["formatted_response"] = conversation_response.strip()
             
         except Exception as e:
