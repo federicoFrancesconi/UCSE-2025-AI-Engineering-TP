@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """
-Test script for RAG functionality.
+RAG functionality test suite.
+Tests RAG initialization, query classification, and document retrieval.
 """
 
 import os
 import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# Add agent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Add parent directory to path to import agent module
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent import SQLAgent
 
-def test_rag_initialization():
-    """Test that RAG tool initializes correctly."""
-    print("\n" + "="*70)
-    print("TEST 1: RAG Tool Initialization")
-    print("="*70)
-    
+def get_agent_config():
+    """Get standard agent configuration."""
     db_config = {
         "host": os.getenv("DB_HOST"),
         "port": int(os.getenv("DB_PORT")),
@@ -31,18 +29,39 @@ def test_rag_initialization():
     
     rag_config = {
         "summaries_dir": os.getenv("SUMMARIES_DIR"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL"),
-        "chroma_db_dir": os.getenv("CHROMA_DB_DIR")
+        "embedding_model": os.getenv("EMBEDDING_MODEL", "nomic-embed-text"),
+        "chroma_db_dir": os.getenv("CHROMA_DB_DIR", "./chroma_db")
     }
     
+    return db_config, rag_config
+
+def create_agent():
+    """Create agent with current configuration."""
+    db_config, rag_config = get_agent_config()
+    model_provider = os.getenv("MODEL_PROVIDER", "ollama")
+    
+    return SQLAgent(
+        db_config=db_config,
+        ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+        sql_model=os.getenv("SQL_MODEL", "phi3:mini"),
+        conversation_model=os.getenv("CONVERSATION_MODEL", "llama3.2:3b"),
+        classifier_model=os.getenv("CLASSIFIER_MODEL", "phi3:mini"),
+        rag_config=rag_config,
+        model_provider=model_provider,
+        groq_api_key=os.getenv("GROQ_API_KEY"),
+        groq_sql_model=os.getenv("GROQ_SQL_MODEL", "llama-3.1-8b-instant"),
+        groq_conversation_model=os.getenv("GROQ_CONVERSATION_MODEL", "llama-3.1-8b-instant"),
+        groq_classifier_model=os.getenv("GROQ_CLASSIFIER_MODEL", "llama-3.1-8b-instant")
+    )
+
+def test_rag_initialization():
+    """Test that RAG tool initializes correctly."""
+    print("\n" + "="*70)
+    print("TEST 1: RAG Tool Initialization")
+    print("="*70)
+    
     try:
-        agent = SQLAgent(
-            db_config=db_config,
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
-            sql_model=os.getenv("SQL_MODEL"),
-            conversation_model=os.getenv("CONVERSATION_MODEL"),
-            rag_config=rag_config
-        )
+        agent = create_agent()
         
         if agent.rag_tool:
             print("✅ RAG Tool initialized successfully!")
@@ -65,32 +84,15 @@ def test_query_classification():
     print("TEST 2: Query Classification")
     print("="*70)
     
-    db_config = {
-        "host": os.getenv("DB_HOST"),
-        "port": int(os.getenv("DB_PORT")),
-        "database": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD")
-    }
-    
-    rag_config = {
-        "summaries_dir": os.getenv("SUMMARIES_DIR"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL"),
-        "chroma_db_dir": os.getenv("CHROMA_DB_DIR")
-    }
-    
-    agent = SQLAgent(
-        db_config=db_config,
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
-        sql_model=os.getenv("SQL_MODEL"),
-        conversation_model=os.getenv("CONVERSATION_MODEL"),
-        rag_config=rag_config
-    )
+    agent = create_agent()
     
     test_queries = [
         ("¿Cuántos usuarios hay?", "SQL"),
+        ("How many users do we have?", "SQL"),
         ("¿De qué trata Aventuras Galácticas?", "RAG"),
-        ("Películas de ciencia ficción mejor calificadas", "HYBRID"),
+        ("What is Aventuras Galácticas about?", "RAG"),
+        ("¿De qué trata la película más vista?", "HYBRID"),
+        ("What is the most viewed movie about?", "HYBRID"),
     ]
     
     print("\nTesting query classification:")
@@ -110,30 +112,10 @@ def test_query_classification():
 def test_sql_query():
     """Test a SQL-only query."""
     print("\n" + "="*70)
-    print("TEST 3: SQL Query (should work as before)")
+    print("TEST 3: SQL Query")
     print("="*70)
     
-    db_config = {
-        "host": os.getenv("DB_HOST"),
-        "port": int(os.getenv("DB_PORT")),
-        "database": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD")
-    }
-    
-    rag_config = {
-        "summaries_dir": os.getenv("SUMMARIES_DIR"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL"),
-        "chroma_db_dir": os.getenv("CHROMA_DB_DIR")
-    }
-    
-    agent = SQLAgent(
-        db_config=db_config,
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
-        sql_model=os.getenv("SQL_MODEL"),
-        conversation_model=os.getenv("CONVERSATION_MODEL"),
-        rag_config=rag_config
-    )
+    agent = create_agent()
     
     query = "¿Cuántos usuarios tenemos?"
     print(f"\nQuery: {query}")
@@ -156,30 +138,10 @@ def test_sql_query():
 def test_rag_query():
     """Test a RAG-only query."""
     print("\n" + "="*70)
-    print("TEST 4: RAG Query (new capability)")
+    print("TEST 4: RAG Query")
     print("="*70)
     
-    db_config = {
-        "host": os.getenv("DB_HOST"),
-        "port": int(os.getenv("DB_PORT")),
-        "database": os.getenv("DB_NAME"),
-        "user": os.getenv("DB_USER"),
-        "password": os.getenv("DB_PASSWORD")
-    }
-    
-    rag_config = {
-        "summaries_dir": os.getenv("SUMMARIES_DIR"),
-        "embedding_model": os.getenv("EMBEDDING_MODEL"),
-        "chroma_db_dir": os.getenv("CHROMA_DB_DIR")
-    }
-    
-    agent = SQLAgent(
-        db_config=db_config,
-        ollama_base_url=os.getenv("OLLAMA_BASE_URL"),
-        sql_model=os.getenv("SQL_MODEL"),
-        conversation_model=os.getenv("CONVERSATION_MODEL"),
-        rag_config=rag_config
-    )
+    agent = create_agent()
     
     query = "¿De qué trata Aventuras Galácticas?"
     print(f"\nQuery: {query}")
