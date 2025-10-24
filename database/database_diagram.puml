@@ -1,0 +1,168 @@
+@startuml streaming_database
+
+' Configuración de estilo
+skinparam class {
+    BackgroundColor LightBlue
+    BorderColor Black
+    ArrowColor Black
+}
+
+' ============================================
+' TABLAS AUXILIARES (catálogos de referencia)
+' ============================================
+
+class Planes {
+    **PK: id_plan**: SERIAL
+    --
+    nombre: VARCHAR(50)
+    precio_mensual: DECIMAL(10,2)
+    calidad: VARCHAR(20)
+    num_dispositivos: INTEGER
+}
+
+class TipoContenido {
+    **PK: id_tipo_contenido**: SERIAL
+    --
+    <color:green>UQ:</color> descripcion: VARCHAR(50)
+}
+
+class Genero {
+    **PK: id_genero**: SERIAL
+    --
+    <color:green>UQ:</color> nombre: VARCHAR(50)
+}
+
+class ClasificacionEdad {
+    **PK: id_clasificacion**: SERIAL
+    --
+    <color:green>UQ:</color> codigo: VARCHAR(10)
+    descripcion: VARCHAR(100)
+}
+
+' ============================================
+' ENTIDADES PRINCIPALES
+' ============================================
+
+class Usuarios {
+    **PK: id_usuario**: SERIAL
+    --
+    nombre: VARCHAR(100)
+    <color:green>UQ:</color> email: VARCHAR(100)
+    fecha_registro: DATE
+    pais: VARCHAR(50)
+    fecha_nacimiento: DATE
+    genero: VARCHAR(20)
+}
+
+class Contenido {
+    **PK: id_contenido**: SERIAL
+    --
+    titulo: VARCHAR(200)
+    <color:blue>FK:</color> id_tipo_contenido: INTEGER
+    <color:blue>FK:</color> id_genero: INTEGER
+    <color:blue>FK:</color> id_clasificacion: INTEGER
+    fecha_estreno: DATE
+    duracion_min: INTEGER
+}
+
+class Actores {
+    **PK: id_actor**: SERIAL
+    --
+    nombre: VARCHAR(100)
+    pais: VARCHAR(50)
+    fecha_nacimiento: DATE
+}
+
+class Suscripciones {
+    **PK: id_suscripcion**: SERIAL
+    --
+    <color:blue>FK:</color> id_usuario: INTEGER
+    <color:blue>FK:</color> id_plan: INTEGER
+    fecha_inicio: DATE
+    fecha_fin: DATE
+    precio: DECIMAL(10,2)
+}
+
+class Visualizaciones {
+    **PK: id_visualizacion**: SERIAL
+    --
+    <color:blue>FK:</color> id_usuario: INTEGER
+    <color:blue>FK:</color> id_contenido: INTEGER
+    fecha: TIMESTAMP
+    minutos_vistos: INTEGER
+}
+
+class Ratings {
+    **PK: id_rating**: SERIAL
+    --
+    <color:blue>FK:</color> id_usuario: INTEGER
+    <color:blue>FK:</color> id_contenido: INTEGER
+    puntaje: INTEGER [1-5]
+    fecha_rating: TIMESTAMP
+    --
+    <color:green>UQ:</color> (id_usuario, id_contenido)
+}
+
+class Contenido_Actor {
+    **PK:** (id_contenido, id_actor, rol)
+    --
+    <color:blue>FK:</color> id_contenido: INTEGER
+    <color:blue>FK:</color> id_actor: INTEGER
+    rol: VARCHAR(50)
+}
+
+' ============================================
+' RELACIONES
+' ============================================
+
+' Relaciones de Contenido
+TipoContenido "1" -- "0..*" Contenido : define tipo
+Genero "1" -- "0..*" Contenido : categoriza
+ClasificacionEdad "1" -- "0..*" Contenido : clasifica
+
+' Relaciones de Suscripciones
+Usuarios "1" -- "0..*" Suscripciones : tiene
+Planes "1" -- "0..*" Suscripciones : suscribe a
+
+' Relaciones de Visualizaciones
+Usuarios "1" -- "0..*" Visualizaciones : visualiza
+Contenido "1" -- "0..*" Visualizaciones : es visto
+
+' Relaciones de Ratings
+Usuarios "1" -- "0..*" Ratings : califica
+Contenido "1" -- "0..*" Ratings : recibe calificación
+
+' Relación N:M entre Contenido y Actores
+Contenido "1" -- "0..*" Contenido_Actor
+Actores "1" -- "0..*" Contenido_Actor
+Contenido_Actor .. Contenido : participa en
+Contenido_Actor .. Actores : tiene actor
+
+' Notas adicionales
+note right of Usuarios
+  Restricción: genero debe ser
+  'Masculino', 'Femenino', 
+  'Otro', 'Prefiero no decir'
+end note
+
+note right of Ratings
+  Restricción: puntaje 
+  debe estar entre 1 y 5
+  Un usuario solo puede 
+  calificar una vez cada contenido
+end note
+
+note right of Visualizaciones
+  Restricción: minutos_vistos >= 0
+  Índices en: id_usuario, 
+  id_contenido, fecha
+end note
+
+note right of Contenido_Actor
+  Rol: "Actor Principal", 
+  "Director", "Productor", etc.
+  Relación N:M entre 
+  Contenido y Actores
+end note
+
+@enduml
