@@ -73,6 +73,43 @@ def check_groq_availability():
     return groq_api_key is not None and len(groq_api_key.strip()) > 0
 
 
+def get_database_info():
+    """Get database connection information and stats."""
+    try:
+        db_info = {
+            "host": os.getenv("DB_HOST", "N/A"),
+            "port": os.getenv("DB_PORT", "N/A"),
+            "database": os.getenv("DB_NAME", "N/A"),
+            "user": os.getenv("DB_USER", "N/A"),
+            "connected": False,
+            "table_count": 0,
+            "schema_info": None
+        }
+        
+        # Try to get schema info from the agent if available
+        return db_info
+    except Exception as e:
+        logger.error(f"Error getting database info: {e}")
+        return None
+
+
+def test_database_connection(agent):
+    """Test database connection and get table count."""
+    try:
+        if agent and hasattr(agent, 'sql_tool'):
+            # Get schema to verify connection
+            schema = agent.sql_tool.get_database_schema()
+            
+            # Count tables in schema
+            table_count = schema.count("CREATE TABLE")
+            
+            return True, table_count, schema
+        return False, 0, None
+    except Exception as e:
+        logger.error(f"Database connection test failed: {e}")
+        return False, 0, None
+
+
 def initialize_agent(model_provider="ollama"):
     """
     Initialize the SQL Agent with configuration from environment.
@@ -217,6 +254,12 @@ def main():
     if "response_times" not in st.session_state:
         st.session_state.response_times = []
     
+    if "db_connected" not in st.session_state:
+        st.session_state.db_connected = False
+    
+    if "db_table_count" not in st.session_state:
+        st.session_state.db_table_count = 0
+    
     # Pre-initialization: Provider selection screen
     if st.session_state.selected_provider is None:
         st.markdown("---")
@@ -259,6 +302,12 @@ def main():
             if agent:
                 st.session_state.agent = agent
                 st.session_state.model_provider = model_provider
+                
+                # Test database connection
+                db_connected, table_count, _ = test_database_connection(agent)
+                st.session_state.db_connected = db_connected
+                st.session_state.db_table_count = table_count
+                
                 st.success(f"✅ Agent initialized! Using {model_provider.upper()} models")
             else:
                 st.error("Failed to initialize agent. Please check your configuration.")
@@ -529,8 +578,30 @@ def main():
         
         st.markdown("---")
         
+        # Database Info section
+        st.markdown("### 💾 Database")
+        db_info = get_database_info()
+        
+        if db_info:
+            # Connection status
+            if st.session_state.db_connected:
+                st.success("✅ Connected")
+            else:
+                st.error("❌ Disconnected")
+            
+            # Database details
+            st.markdown(f"**Host:** {db_info['host']}")
+            st.markdown(f"**Database:** {db_info['database']}")
+            st.markdown(f"**User:** {db_info['user']}")
+            
+            # Table count
+            if st.session_state.db_connected:
+                st.markdown(f"**Tables:** {st.session_state.db_table_count}")
+        
+        st.markdown("---")
+        
         # Info section
-        st.markdown("### ℹ️ Info")
+        st.markdown("### ℹ️ Statistics")
         st.markdown(f"**Provider:** {current_provider.upper()}")
         
         # Count only user messages (queries)
