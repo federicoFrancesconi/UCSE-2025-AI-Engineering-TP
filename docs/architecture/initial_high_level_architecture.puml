@@ -1,0 +1,20 @@
+@startuml base_architecture
+title Arquitectura base - SQL AI Agent (Streaming)
+
+actor Usuario
+
+rectangle "Agente LangGraph" as Agente {
+    component "LLM" as LLM
+    component "SQL Tool" as SQLTool
+}
+
+database "BD Streaming" as DB
+
+Usuario --> LLM
+LLM --> SQLTool : Traduce a SQL\n(query generada)
+SQLTool --> DB : Ejecuta query SQL
+DB --> SQLTool : Devuelve resultados
+SQLTool --> LLM : Retorna resultados procesados
+LLM --> Usuario
+
+@enduml

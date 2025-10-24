@@ -1,0 +1,59 @@
+@startuml base_architecture
+title Arquitectura High-Level - AI Agent (Streaming Platform)
+
+actor Usuario
+
+cloud "Model Provider" as Provider {
+    component "Ollama\n(Local)" as Ollama
+    component "Groq\n(Cloud)" as Groq
+}
+
+rectangle "Agente LangGraph" as Agente {
+    component "Query Classifier" as Classifier
+    component "SQL Tool" as SQLTool
+    component "RAG Tool" as RAGTool
+    component "Response Generator" as RespGen
+}
+
+database "BD Streaming\n(PostgreSQL)" as DB
+database "Vector Store\n(ChromaDB)" as VectorDB
+folder "PDF Summaries\n(30 docs)" as PDFs
+
+Usuario --> Classifier : Pregunta en\nlenguaje natural
+
+Classifier --> Provider : Clasifica query\n(SQL/RAG/HYBRID)
+Provider --> Classifier
+
+Classifier --> SQLTool : [SQL Path]\nEstadísticas/Conteos
+Classifier --> RAGTool : [RAG Path]\nDescripciones/Contenido
+Classifier --> SQLTool : [HYBRID Path]
+Classifier --> RAGTool : [HYBRID Path]
+
+SQLTool --> DB : Ejecuta SQL
+DB --> SQLTool : Resultados
+
+RAGTool --> VectorDB : Búsqueda semántica
+VectorDB --> RAGTool : Documentos relevantes
+PDFs -down-> VectorDB : Inicialización\n(primera vez)
+
+SQLTool --> RespGen : Resultados SQL
+RAGTool --> RespGen : Contexto RAG
+
+RespGen --> Provider : Genera respuesta\nfinal
+Provider --> RespGen
+RespGen --> Usuario : Respuesta\nen lenguaje natural
+
+note right of Provider
+  Configurable via .env:
+  - MODEL_PROVIDER=ollama (local)
+  - MODEL_PROVIDER=groq (cloud)
+end note
+
+note right of Classifier
+  Tipos de Query:
+  - SQL: estadísticas, conteos
+  - RAG: descripciones, temas
+  - HYBRID: ambos combinados
+end note
+
+@enduml

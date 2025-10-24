@@ -1,0 +1,121 @@
+@startuml implemented_architecture
+title Current AI Agent Architecture - LangGraph with RAG & Multi-Provider Support
+
+actor Usuario
+
+cloud "Model Provider" as Provider {
+    component "Ollama\n(Local)" as Ollama
+    component "Groq\n(Cloud)" as Groq
+}
+
+rectangle "LangGraph Workflow" as LG {
+    rectangle "Node: Classify Query" as N1 {
+        component "Classifier LLM\n(LLM or Embeddings)" as Classifier
+        note right
+          Classification Types:
+          - SQL: statistics, counts
+          - RAG: content descriptions
+          - HYBRID: both combined
+        end note
+    }
+    
+    rectangle "Node: Generate SQL" as N2 {
+        component "SQL Model\n(Ollama/Groq)" as SQL_LLM
+        database "Schema Cache" as SC
+        note right
+          Models:
+          - Ollama: phi3:mini, sqlcoder
+          - Groq: llama-3.1-8b-instant
+        end note
+    }
+    
+    rectangle "Node: Execute SQL" as N3 {
+        component "SQL Tool" as SQLTool {
+            component "Validator" as Val
+            component "Executor" as Exec
+        }
+    }
+    
+    rectangle "Node: Retrieve Documents" as N_RAG {
+        component "RAG Tool" as RAGTool
+        database "ChromaDB\nVector Store" as VectorDB
+        folder "PDF Summaries" as PDFs
+        note right
+          RAG Operations:
+          - Semantic search by query
+          - Exact retrieval by title
+          - Auto-initialization
+        end note
+    }
+    
+    rectangle "Node: Format Response" as N4 {
+        component "Conversation Model\n(Ollama/Groq)" as Conv_LLM
+        note right
+          Merges:
+          - SQL results (tables)
+          - RAG context (docs)
+          - Natural language
+        end note
+    }
+    
+    rectangle "Node: Handle Error" as N5 {
+        component "Error Formatter" as EF
+    }
+}
+
+database "PostgreSQL\nStreaming DB" as DB
+
+' Main flow
+Usuario --> N1 : Natural Language Query
+
+N1 --> Provider : Classify
+Provider --> N1
+
+N1 --> N2 : [SQL]\n[HYBRID]
+N1 --> N_RAG : [RAG]\n[HYBRID]
+
+' SQL Path
+N2 --> SC : Get Schema
+SC --> SQL_LLM
+SQL_LLM --> Provider
+Provider --> SQL_LLM
+SQL_LLM --> N3 : Generated SQL
+
+N3 --> Val : Validate SQL
+Val --> Exec : Valid?
+Exec --> DB : Execute SELECT
+DB --> Exec : Results
+
+' RAG Path
+N_RAG --> RAGTool
+RAGTool --> VectorDB : Search/Retrieve
+VectorDB --> RAGTool : Documents
+PDFs -down-> VectorDB : Load (first run)
+
+' Convergence
+N3 --> N4 : SQL Results
+N3 --> N_RAG : [HYBRID: extract titles]
+N_RAG --> N4 : RAG Context
+
+N4 --> Conv_LLM : Format
+Conv_LLM --> Provider
+Provider --> Conv_LLM
+Conv_LLM --> Usuario : Final Response
+
+' Error handling
+N2 -right-> N5 : Error
+N3 -right-> N5 : Error
+N_RAG -right-> N5 : Error
+N5 --> Usuario : Error Message
+
+note bottom of LG
+  Key Features:
+  - Multi-provider: Ollama (local) or Groq (cloud)
+  - Three query types: SQL, RAG, HYBRID
+  - RAG: ChromaDB + nomic-embed-text embeddings
+  - Classification: LLM-based or embedding-based
+  - Security: SQL validation, SELECT-only queries
+  - Performance: Schema cache, persistent vector store
+end note
+
+@enduml

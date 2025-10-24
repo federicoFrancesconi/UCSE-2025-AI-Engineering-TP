@@ -1,0 +1,68 @@
+@startuml implemented_architecture
+title Implemented SQL AI Agent Architecture - LangGraph
+
+actor Usuario
+
+rectangle "LangGraph Workflow" as LG {
+    rectangle "Node: Understand Query" as N1 {
+        component "Validate Input" as V1
+    }
+    
+    rectangle "Node: Generate SQL" as N2 {
+        component "Ollama\nsqlcoder:7b" as SQL_LLM
+        database "Schema Cache" as SC
+    }
+    
+    rectangle "Node: Execute SQL" as N3 {
+        component "SQL Tool" as SQLTool {
+            component "Validator" as Val
+            component "Executor" as Exec
+        }
+    }
+    
+    rectangle "Node: Format Response" as N4 {
+        component "Ollama\nllama3.2:3b" as Conv_LLM
+    }
+    
+    rectangle "Node: Handle Error" as N5 {
+        component "Error Formatter" as EF
+    }
+}
+
+database "PostgreSQL\nStreaming DB" as DB
+
+Usuario --> N1 : Natural Language Query
+N1 --> N2 : Validated Query
+N2 --> SC : Get Schema
+SC --> SQL_LLM : Schema + Query
+SQL_LLM --> N3 : Generated SQL
+
+N3 --> Val : Validate SQL
+Val --> Exec : Valid?
+Exec --> DB : Execute SELECT
+DB --> Exec : Results
+Exec --> N4 : Success?
+
+N4 --> Conv_LLM : Results + SQL
+Conv_LLM --> Usuario : Natural Language\n+ SQL + Table
+
+N3 -right-> N5 : Error
+N2 -right-> N5 : Error
+N5 --> Usuario : Error Message
+
+note right of SQLTool
+  Security Features:
+  - Only SELECT allowed
+  - SQL injection prevention
+  - Single statement validation
+  - Keyword blocking
+end note
+
+note right of SC
+  Performance:
+  - Schema cached on first load
+  - 11 tables with metadata
+  - Foreign key relationships
+end note
+
+@enduml
