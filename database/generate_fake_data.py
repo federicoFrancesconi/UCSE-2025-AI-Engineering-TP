@@ -24,7 +24,7 @@ fake = Faker(['es_ES', 'es_MX', 'es_AR', 'en_US', 'pt_BR'])
 DB_CONFIG = {
     'host': 'localhost',
     'database': 'streaming',
-    'user': 'postgres',
+    'user': 'federico',
     'password': 'password',  # Cambiar por tu contraseña
     'port': 5432
 }
@@ -326,7 +326,12 @@ class StreamingDataGenerator:
             if rand_val < 0.3:  # 30% abandona temprano
                 minutos_vistos = random.randint(5, min(30, duracion_total))
             elif rand_val < 0.6:  # 30% ve parcialmente
-                minutos_vistos = random.randint(30, int(duracion_total * 0.8))
+                min_parcial = min(30, int(duracion_total * 0.3))
+                max_parcial = int(duracion_total * 0.8)
+                if max_parcial > min_parcial:
+                    minutos_vistos = random.randint(min_parcial, max_parcial)
+                else:
+                    minutos_vistos = random.randint(5, duracion_total)
             else:  # 40% ve completo
                 minutos_vistos = duracion_total
             
@@ -354,19 +359,29 @@ class StreamingDataGenerator:
         """Generar ratings"""
         print(f"Generando hasta {count} ratings...")
         
+        # Obtener ratings existentes para evitar duplicados
+        self.cursor.execute("SELECT id_usuario, id_contenido FROM Ratings")
+        existing_ratings = set((row[0], row[1]) for row in self.cursor.fetchall())
+        print(f"  Ratings existentes en la base de datos: {len(existing_ratings)}")
+        
         # Obtener visualizaciones para generar ratings basados en ellas
         self.cursor.execute("""
-            SELECT DISTINCT v.id_usuario, v.id_contenido, v.fecha, v.minutos_vistos, c.duracion_min
+            SELECT v.id_usuario, v.id_contenido, v.fecha, v.minutos_vistos, c.duracion_min
             FROM Visualizaciones v
             JOIN Contenido c ON v.id_contenido = c.id_contenido
             ORDER BY RANDOM()
             LIMIT %s
-        """, (count,))
+        """, (count * 3,))  # Obtener más visualizaciones para compensar duplicados
         
         visualizaciones = self.cursor.fetchall()
         ratings_data = []
         
         for user_id, content_id, fecha_view, minutos_vistos, duracion_total in visualizaciones:
+            # Verificar que no exista ya este rating
+            rating_key = (user_id, content_id)
+            if rating_key in existing_ratings:
+                continue
+            
             # Solo 40% de las visualizaciones generan rating
             if random.random() < 0.4:
                 # El rating depende de si vio el contenido completo
@@ -391,25 +406,26 @@ class StreamingDataGenerator:
                     puntaje,
                     fecha_rating
                 ))
-        
-        # Eliminar duplicados (un usuario solo puede calificar una vez cada contenido)
-        unique_ratings = {}
-        for rating in ratings_data:
-            key = (rating[0], rating[1])  # user_id, content_id
-            if key not in unique_ratings:
-                unique_ratings[key] = rating
-        
-        final_ratings = list(unique_ratings.values())
+                
+                # Marcar como usado para evitar duplicados en este lote
+                existing_ratings.add(rating_key)
+                
+                # Detener si ya tenemos suficientes ratings
+                if len(ratings_data) >= count:
+                    break
         
         try:
-            execute_batch(
-                self.cursor,
-                "INSERT INTO Ratings (id_usuario, id_contenido, puntaje, fecha_rating) VALUES (%s, %s, %s, %s)",
-                final_ratings,
-                page_size=100
-            )
-            self.conn.commit()
-            print(f"✓ {len(final_ratings)} ratings insertados correctamente")
+            if ratings_data:
+                execute_batch(
+                    self.cursor,
+                    "INSERT INTO Ratings (id_usuario, id_contenido, puntaje, fecha_rating) VALUES (%s, %s, %s, %s)",
+                    ratings_data,
+                    page_size=100
+                )
+                self.conn.commit()
+                print(f"✓ {len(ratings_data)} ratings insertados correctamente")
+            else:
+                print("⚠ No hay nuevos ratings para insertar (todos los usuarios ya calificaron este contenido)")
         except Exception as e:
             print(f"✗ Error insertando ratings: {e}")
             self.conn.rollback()
@@ -439,6 +455,9 @@ class StreamingDataGenerator:
             num_relations = random.randint(2, 8)
             content_actors = random.sample(actor_ids, min(num_relations, len(actor_ids)))
             
+            # Track roles used for this specific content to avoid duplicates
+            used_roles_for_content = set()
+            
             for i, actor_id in enumerate(content_actors):
                 # Primer actor suele ser principal
                 if i == 0:
@@ -446,7 +465,15 @@ class StreamingDataGenerator:
                 else:
                     rol = random.choice(roles)
                 
+                # Ensure unique combination of content_id, actor_id, and rol
                 relation_key = (content_id, actor_id, rol)
+                # If this exact combination exists, try a different role
+                attempts = 0
+                while relation_key in existing_relations and attempts < 10:
+                    rol = random.choice(roles)
+                    relation_key = (content_id, actor_id, rol)
+                    attempts += 1
+                
                 if relation_key not in existing_relations:
                     existing_relations.add(relation_key)
                     relations_data.append(relation_key)
