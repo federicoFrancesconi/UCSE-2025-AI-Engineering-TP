@@ -3,19 +3,26 @@
 Script para generar datos falsos realistas para la base de datos de streaming.
 Utiliza la librería Faker para generar datos variados y realistas.
 
-Requiere: pip install faker psycopg2-binary
+Requiere: pip install faker psycopg2-binary reportlab
 
 Uso:
-python generate_fake_data.py [--users N] [--content N] [--actors N] [--views N] [--ratings N]
+python generate_fake_data.py [--users N] [--content N] [--actors N] [--views N] [--ratings N] [--generate-pdfs] [--summaries-dir PATH]
 """
 
 import argparse
 import random
+import os
+import re
 from datetime import timedelta, date
 from faker import Faker
 import psycopg2
 from psycopg2.extras import execute_batch
 import sys
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
 
 # Configurar Faker con múltiples locales para más diversidad
 fake = Faker(['es_ES', 'es_MX', 'es_AR', 'en_US', 'pt_BR'])
@@ -30,16 +37,98 @@ DB_CONFIG = {
 }
 
 class StreamingDataGenerator:
-    def __init__(self, db_config):
+    def __init__(self, db_config, summaries_dir='../summaries', generate_pdfs=False):
         self.db_config = db_config
         self.conn = None
         self.cursor = None
+        self.summaries_dir = summaries_dir
+        self.generate_pdfs = generate_pdfs
         
         # Cache para IDs existentes
         self.plan_ids = []
         self.tipo_contenido_ids = []
         self.genero_ids = []
         self.clasificacion_ids = []
+        
+        # Cache para mapeo de IDs a nombres
+        self.genero_names = {}
+        self.tipo_contenido_names = {}
+        
+        # Templates de sinopsis por género
+        self.synopsis_templates = {
+            'Acción': [
+                "Un {profesion} debe enfrentarse a {amenaza} antes de que sea demasiado tarde. Acción trepidante con {estilo}.",
+                "Cuando {situacion}, un grupo de {profesion_plural} debe {accion} para salvar el día. Espectáculo visual con {estilo}.",
+                "En medio de {contexto}, un {profesion} descubre una conspiración que amenaza {objetivo}. Thriller de acción con {estilo}.",
+            ],
+            'Comedia': [
+                "Una historia divertida sobre {protagonista} que se mete en problemas cuando {situacion}. Comedia {tono} con momentos inolvidables.",
+                "{protagonista} intenta {objetivo} pero todo sale mal de las maneras más hilarantes. Humor {tono} y situaciones absurdas.",
+                "La vida de {protagonista} da un giro inesperado cuando {situacion}. Comedia {tono} que te hará reír de principio a fin.",
+            ],
+            'Drama': [
+                "Una emotiva historia sobre {protagonista} que debe enfrentar {conflicto}. Drama {tono} con actuaciones memorables.",
+                "En medio de {contexto}, {protagonista} descubre verdades sobre {tema}. Narrativa {tono} y conmovedora.",
+                "{protagonista} lucha por {objetivo} mientras lidia con {conflicto}. Drama {tono} de profundo impacto emocional.",
+            ],
+            'Ciencia Ficción': [
+                "En un futuro donde {contexto_futuro}, la humanidad debe {accion} para sobrevivir. Ciencia ficción {tono} con {estilo}.",
+                "Cuando {evento_scifi}, {protagonista} descubre secretos que cambiarán {objetivo}. Narrativa futurista con {estilo}.",
+                "Una exploración de {tema} en un mundo donde {contexto_futuro}. Sci-fi {tono} que desafía la imaginación.",
+            ],
+            'Terror': [
+                "Una experiencia aterradora donde {protagonista} se enfrenta a {amenaza} en {lugar}. Terror {tono} que te mantendrá al borde del asiento.",
+                "En {lugar}, {situacion} desata horrores inimaginables. Película de terror {tono} con atmósfera opresiva.",
+                "{protagonista} descubre que {situacion} y debe sobrevivir a {amenaza}. Horror {tono} con giros inesperados.",
+            ],
+            'Romance': [
+                "Una historia de amor entre {protagonista} que descubren que el amor puede florecer en {contexto}. Romance {tono} y emotivo.",
+                "Cuando {situacion}, dos personas encuentran el amor en el lugar menos esperado. Romance {tono} con {estilo}.",
+                "{protagonista} debe elegir entre {conflicto}. Una historia romántica {tono} que toca el corazón.",
+            ],
+            'Documental': [
+                "Una exploración fascinante de {tema} que revela {descubrimiento}. Documental {tono} de gran valor educativo.",
+                "Un viaje cinematográfico que examina {tema} desde perspectivas únicas. Producción {tono} con {estilo}.",
+                "Una investigación profunda sobre {tema} que cambiará tu forma de ver {contexto}. Documental {tono} imprescindible.",
+            ],
+            'Fantasía': [
+                "En un mundo mágico donde {contexto_fantasia}, {protagonista} debe {accion} para {objetivo}. Fantasía {tono} con mundos imaginarios.",
+                "Una aventura épica donde {situacion} desata una batalla entre {conflicto}. Fantasía {tono} y visualmente deslumbrante.",
+                "{protagonista} descubre poderes {tema} que podrían {objetivo}. Fantasía {tono} llena de magia y aventuras.",
+            ],
+            'Misterio': [
+                "Un {profesion} investiga {situacion} que lo lleva por un laberinto de secretos y mentiras. Misterio {tono} con {estilo}.",
+                "Cuando {evento_misterio}, {protagonista} debe descubrir la verdad antes de que {amenaza}. Thriller {tono} intrigante.",
+                "Una serie de {evento_misterio} lleva a {protagonista} a desentrañar {conflicto}. Misterio {tono} absorbente.",
+            ],
+            'Animación': [
+                "Una aventura animada donde {protagonista} aprende sobre {tema} mientras {accion}. Animación {tono} para toda la familia.",
+                "En un mundo colorido, {situacion} desencadena una aventura increíble. Animación {tono} con {estilo}.",
+                "{protagonista} debe {accion} para salvar {objetivo}. Animación {tono} llena de diversión y corazón.",
+            ]
+        }
+        
+        # Variables para templates
+        self.template_vars = {
+            'profesion': ['detective', 'agente secreto', 'soldado', 'policía', 'investigador', 'mercenario', 'piloto'],
+            'profesion_plural': ['agentes', 'soldados', 'especialistas', 'investigadores', 'héroes'],
+            'amenaza': ['una organización criminal', 'un virus mortal', 'una invasión', 'un complot terrorista', 'fuerzas oscuras'],
+            'situacion': ['todo sale mal', 'descubren un secreto', 'el destino los reúne', 'sus vidas cambian para siempre', 'la verdad sale a la luz'],
+            'accion': ['trabajar juntos', 'detener el plan', 'encontrar la verdad', 'sobrevivir', 'desenmascarar al culpable'],
+            'contexto': ['la guerra', 'el caos', 'una crisis', 'tiempos difíciles', 'la adversidad'],
+            'contexto_futuro': ['la tecnología domina todo', 'la humanidad coloniza el espacio', 'la inteligencia artificial gobierna', 'los recursos se agotan'],
+            'contexto_fantasia': ['la magia existe', 'criaturas míticas viven', 'diferentes reinos coexisten', 'el destino es real'],
+            'objetivo': ['el mundo', 'la humanidad', 'su ciudad', 'a los inocentes', 'todo lo que aman'],
+            'estilo': ['efectos impresionantes', 'cinematografía brillante', 'narrativa envolvente', 'dirección magistral', 'atmósfera única'],
+            'tono': ['ligera', 'oscuro', 'emotivo', 'intenso', 'moderno', 'clásico', 'innovador', 'reflexivo'],
+            'protagonista': ['una familia', 'un grupo de amigos', 'una mujer', 'un hombre', 'una pareja', 'unos vecinos'],
+            'conflicto': ['su pasado', 'secretos familiares', 'la traición', 'sus miedos', 'el destino', 'pérdidas dolorosas'],
+            'tema': ['la verdad', 'el amor', 'la familia', 'el perdón', 'la justicia', 'la lealtad', 'el sacrificio'],
+            'evento_scifi': ['la tecnología falla', 'se descubre vida extraterrestre', 'el tiempo se distorsiona', 'la realidad se fragmenta'],
+            'evento_misterio': ['un crimen inexplicable', 'una serie de desapariciones', 'un asesinato', 'eventos extraños'],
+            'lugar': ['una casa abandonada', 'un bosque oscuro', 'un pueblo remoto', 'una mansión antigua', 'un hospital'],
+            'descubrimiento': ['verdades ocultas', 'historias fascinantes', 'secretos antiguos', 'realidades sorprendentes']
+        }
         
     def connect_db(self):
         """Conectar a la base de datos PostgreSQL"""
@@ -65,13 +154,17 @@ class StreamingDataGenerator:
             self.cursor.execute("SELECT id_plan FROM Planes")
             self.plan_ids = [row[0] for row in self.cursor.fetchall()]
             
-            # Cargar IDs de tipos de contenido
-            self.cursor.execute("SELECT id_tipo_contenido FROM TipoContenido")
-            self.tipo_contenido_ids = [row[0] for row in self.cursor.fetchall()]
+            # Cargar IDs y nombres de tipos de contenido
+            self.cursor.execute("SELECT id_tipo_contenido, descripcion FROM TipoContenido")
+            for row in self.cursor.fetchall():
+                self.tipo_contenido_ids.append(row[0])
+                self.tipo_contenido_names[row[0]] = row[1]
             
-            # Cargar IDs de géneros
-            self.cursor.execute("SELECT id_genero FROM Genero")
-            self.genero_ids = [row[0] for row in self.cursor.fetchall()]
+            # Cargar IDs y nombres de géneros
+            self.cursor.execute("SELECT id_genero, nombre FROM Genero")
+            for row in self.cursor.fetchall():
+                self.genero_ids.append(row[0])
+                self.genero_names[row[0]] = row[1]
             
             # Cargar IDs de clasificaciones
             self.cursor.execute("SELECT id_clasificacion FROM ClasificacionEdad")
@@ -176,7 +269,17 @@ class StreamingDataGenerator:
         """Generar contenido falso"""
         print(f"Generando {count} contenidos...")
         
+        # Crear directorio de summaries si no existe y se generarán PDFs
+        if self.generate_pdfs:
+            os.makedirs(self.summaries_dir, exist_ok=True)
+            print(f"  Directorio de PDFs: {self.summaries_dir}")
+        
         content_data = []
+        paises_produccion = [
+            'Argentina', 'Brasil', 'México', 'Colombia', 'Chile', 'España',
+            'Estados Unidos', 'Canadá', 'Reino Unido', 'Francia', 'Italia',
+            'Alemania', 'Japón', 'Corea del Sur', 'Australia', 'India'
+        ]
         
         # Títulos base para diferentes géneros
         titulos_accion = [
@@ -229,24 +332,45 @@ class StreamingDataGenerator:
             else:  # Especial
                 duracion = random.randint(60, 150)
             
+            pais_produccion = random.choice(paises_produccion)
+            
             content_data.append((
                 titulo,
                 tipo_id,
                 genero_id,
                 random.choice(self.clasificacion_ids),
                 fecha_estreno,
-                duracion
+                duracion,
+                pais_produccion
             ))
         
         try:
             execute_batch(
                 self.cursor,
                 "INSERT INTO Contenido (titulo, id_tipo_contenido, id_genero, id_clasificacion, fecha_estreno, duracion_min) VALUES (%s, %s, %s, %s, %s, %s)",
-                content_data,
+                [item[:-1] for item in content_data],  # Excluir país de la inserción DB
                 page_size=100
             )
             self.conn.commit()
             print(f"✓ {count} contenidos insertados correctamente")
+            
+            # Generar PDFs si está habilitado
+            if self.generate_pdfs:
+                print(f"  Generando PDFs para los contenidos...")
+                pdfs_generated = 0
+                pdfs_skipped = 0
+                
+                for titulo, tipo_id, genero_id, _, fecha_estreno, duracion, pais in content_data:
+                    genero_name = self.genero_names.get(genero_id, 'General')
+                    tipo_name = self.tipo_contenido_names.get(tipo_id, 'Contenido')
+                    
+                    if self.create_pdf_summary(titulo, genero_name, tipo_name, fecha_estreno, duracion, pais):
+                        pdfs_generated += 1
+                    else:
+                        pdfs_skipped += 1
+                
+                print(f"  ✓ {pdfs_generated} PDFs generados, {pdfs_skipped} ya existían")
+                
         except Exception as e:
             print(f"✗ Error insertando contenido: {e}")
             self.conn.rollback()
@@ -430,6 +554,112 @@ class StreamingDataGenerator:
             print(f"✗ Error insertando ratings: {e}")
             self.conn.rollback()
     
+    def sanitize_filename(self, title):
+        """Convertir título a nombre de archivo válido"""
+        # Reemplazar espacios con guiones bajos
+        filename = title.replace(' ', '_')
+        # Eliminar caracteres especiales pero mantener tildes y ñ
+        filename = re.sub(r'[^\w\sáéíóúñÁÉÍÓÚÑ-]', '', filename)
+        # Eliminar guiones y espacios múltiples
+        filename = re.sub(r'[-\s]+', '_', filename)
+        return filename
+    
+    def generate_synopsis(self, genero_name, tipo_contenido_name):
+        """Generar sinopsis basada en templates"""
+        # Usar género o tipo de contenido como fallback
+        templates = self.synopsis_templates.get(genero_name, self.synopsis_templates.get('Drama', []))
+        
+        if not templates:
+            templates = ["Una producción {tono} sobre {tema} que {accion}. {estilo} memorable."]
+        
+        template = random.choice(templates)
+        
+        # Reemplazar variables en el template
+        synopsis = template
+        for var_name, var_values in self.template_vars.items():
+            if '{' + var_name + '}' in synopsis:
+                synopsis = synopsis.replace('{' + var_name + '}', random.choice(var_values))
+        
+        return synopsis
+    
+    def create_pdf_summary(self, titulo, genero_name, tipo_contenido_name, fecha_estreno, duracion_min, pais):
+        """Crear PDF de resumen para un contenido"""
+        # Crear nombre de archivo
+        filename = self.sanitize_filename(titulo) + '.pdf'
+        filepath = os.path.join(self.summaries_dir, filename)
+        
+        # Verificar si ya existe
+        if os.path.exists(filepath):
+            return False  # Ya existe, no generar
+        
+        try:
+            # Crear documento
+            doc = SimpleDocTemplate(filepath, pagesize=letter,
+                                  topMargin=1*inch, bottomMargin=1*inch,
+                                  leftMargin=1*inch, rightMargin=1*inch)
+            
+            # Estilos
+            styles = getSampleStyleSheet()
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                textColor='black',
+                spaceAfter=20,
+                alignment=TA_CENTER,
+                fontName='Helvetica-Bold'
+            )
+            
+            body_style = ParagraphStyle(
+                'CustomBody',
+                parent=styles['Normal'],
+                fontSize=11,
+                leading=16,
+                textColor='black',
+                alignment=TA_LEFT,
+                fontName='Helvetica'
+            )
+            
+            metadata_style = ParagraphStyle(
+                'Metadata',
+                parent=styles['Normal'],
+                fontSize=10,
+                leading=14,
+                textColor='black',
+                alignment=TA_LEFT,
+                fontName='Helvetica'
+            )
+            
+            # Contenido del PDF
+            story = []
+            
+            # Título
+            story.append(Paragraph(titulo, title_style))
+            story.append(Spacer(1, 0.3*inch))
+            
+            # Sinopsis
+            synopsis = self.generate_synopsis(genero_name, tipo_contenido_name)
+            story.append(Paragraph(synopsis, body_style))
+            story.append(Spacer(1, 0.4*inch))
+            
+            # Metadatos
+            año = fecha_estreno.year if fecha_estreno else 'N/A'
+            story.append(Paragraph(f"<b>Año:</b> {año}", metadata_style))
+            story.append(Spacer(1, 0.1*inch))
+            story.append(Paragraph(f"<b>Género:</b> {genero_name}", metadata_style))
+            story.append(Spacer(1, 0.1*inch))
+            story.append(Paragraph(f"<b>Duración:</b> {duracion_min} min", metadata_style))
+            story.append(Spacer(1, 0.1*inch))
+            story.append(Paragraph(f"<b>País:</b> {pais}", metadata_style))
+            
+            # Generar PDF
+            doc.build(story)
+            return True  # Generado exitosamente
+            
+        except Exception as e:
+            print(f"    ⚠ Error generando PDF para '{titulo}': {e}")
+            return False
+    
     def generate_content_actor_relations(self):
         """Generar relaciones entre contenido y actores"""
         print("Generando relaciones contenido-actor...")
@@ -498,10 +728,12 @@ def main():
     parser.add_argument('--actors', type=int, default=500, help='Número de actores a generar (default: 500)')
     parser.add_argument('--views', type=int, default=10000, help='Número de visualizaciones a generar (default: 10000)')
     parser.add_argument('--ratings', type=int, default=5000, help='Número máximo de ratings a generar (default: 5000)')
+    parser.add_argument('--generate-pdfs', action='store_true', help='Generar archivos PDF de resumen para cada contenido')
+    parser.add_argument('--summaries-dir', type=str, default='../summaries', help='Directorio donde guardar los PDFs (default: ../summaries)')
     
     args = parser.parse_args()
     
-    generator = StreamingDataGenerator(DB_CONFIG)
+    generator = StreamingDataGenerator(DB_CONFIG, summaries_dir=args.summaries_dir, generate_pdfs=args.generate_pdfs)
     
     try:
         generator.connect_db()

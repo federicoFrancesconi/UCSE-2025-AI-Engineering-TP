@@ -7,6 +7,7 @@ psycopg2-binary==2.9.7          # PostgreSQL adapter
 # Database Module Dependencies
 # ----------------------------------------------------------------
 faker==19.6.2                   # Generate fake data for testing
+reportlab==4.0.7                # PDF generation for content summaries
 
 # ----------------------------------------------------------------
 # AI Agent Module Dependencies  
