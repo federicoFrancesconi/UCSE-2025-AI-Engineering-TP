@@ -7,7 +7,20 @@ Este directorio contiene los scripts necesarios para crear y poblar la base de d
 - `create_streaming_tables.sql` - Script para crear todas las tablas del sistema
 - `insert_sample_data.sql` - Script con datos de ejemplo básicos (20 usuarios, 30 contenidos)
 - `generate_fake_data.py` - Script Python para generar grandes volúmenes de datos falsos realistas
+- `summaries_examples/` - Directorio con 30 PDFs de ejemplo para probar la funcionalidad RAG
 - `requirements.txt` - Dependencias Python necesarias
+
+## Configuración del Sistema RAG
+
+Para habilitar las consultas RAG (descripciones de contenido), necesitas copiar los PDFs de ejemplo al directorio de summaries:
+
+```bash
+# Desde el directorio raíz del proyecto
+mkdir -p summaries
+cp database/summaries_examples/*.pdf summaries/
+```
+
+Estos 30 PDFs contienen descripciones de películas, series y documentales que están incluidos en `insert_sample_data.sql`. El agente los usará para responder preguntas como "¿De qué trata Aventuras Galácticas?" o consultas híbridas como "¿Cuál es la película más vista y de qué trata?".
 
 ## Instalación y Configuración
 
@@ -73,6 +86,9 @@ python generate_fake_data.py
 # Personalizar cantidades
 python generate_fake_data.py --users 5000 --content 2000 --actors 1000 --views 50000 --ratings 25000
 
+# Generar con archivos PDF de resumen para cada contenido
+python generate_fake_data.py --users 1000 --content 500 --generate-pdfs
+
 # Ver todas las opciones
 python generate_fake_data.py --help
 ```
@@ -92,6 +108,7 @@ python generate_fake_data.py --help
 - **Usuarios**: Nombres, emails, países, fechas de nacimiento variados
 - **Actores**: De múltiples países con fechas de nacimiento realistas
 - **Contenido**: Títulos generados según género, duraciones apropiadas por tipo
+- **PDFs de resumen**: Archivos PDF con sinopsis y metadata (opcional, con `--generate-pdfs`)
 - **Suscripciones**: 90% de usuarios con suscripción activa
 - **Visualizaciones**: Patrones realistas (algunos completos, otros abandonados)
 - **Ratings**: Correlacionados con el porcentaje visto del contenido

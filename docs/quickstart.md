@@ -35,7 +35,25 @@ source .venv/bin/activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Configure
+# 4. Setup database and RAG data
+# Database setup
+cd database
+psql -U your_user -c "CREATE DATABASE streaming"
+psql -U your_user -d streaming -f create_streaming_tables.sql
+psql -U your_user -d streaming -f insert_sample_data.sql
+
+# Copy example PDFs for RAG functionality
+cd ..
+mkdir -p summaries
+cp database/summaries_examples/*.pdf summaries/
+
+# Optional: Generate additional data with PDF summaries
+# cd database
+# python generate_fake_data.py --users 100 --content 100 --actors 200 --generate-pdfs
+# cd ..
+
+# 5. Configure
+cd agent
 cd agent
 cp .env.example .env
 # Edit .env with your settings
@@ -51,6 +69,9 @@ DB_HOST=localhost
 DB_NAME=streaming
 DB_USER=your_user
 DB_PASSWORD=your_password
+
+# RAG - Directory with PDF summaries
+SUMMARIES_DIR=../summaries
 
 # Model Provider: 'ollama' or 'groq'
 MODEL_PROVIDER=ollama

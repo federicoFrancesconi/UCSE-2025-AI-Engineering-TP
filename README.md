@@ -41,13 +41,14 @@ UCSE-2025-AI-Engineering-TP/
 │   ├── create_streaming_tables.sql
 │   ├── insert_sample_data.sql
 │   ├── generate_fake_data.py
+│   ├── summaries_examples/        # Example PDFs (30 files) for RAG testing
 │   └── README.md
 ├── docs/                          # Documentation
 │   ├── README.md                  # Documentation index
 │   ├── quickstart.md              # Quick start guide
 │   ├── model_optimization.md      # Model selection analysis
 │   └── architecture/              # Architecture diagrams
-├── summaries/                     # PDF content summaries (30 files)
+├── summaries/                     # PDF content summaries (copy from database/summaries_examples/)
 ├── requirements.txt               # Project dependencies
 └── README.md                      # This file
 ```
@@ -81,12 +82,19 @@ psql -U postgres -c "CREATE DATABASE streaming"
 psql -U postgres -d streaming -f database/create_streaming_tables.sql
 psql -U postgres -d streaming -f database/insert_sample_data.sql
 
-# 5. Configure environment
+# Optional: Generate more fake data (with PDF summaries)
+# python database/generate_fake_data.py --users 1000 --content 500 --generate-pdfs
+
+# 5. Setup RAG data (copy example PDFs for content descriptions)
+mkdir -p summaries
+cp database/summaries_examples/*.pdf summaries/
+
+# 6. Configure environment
 cd agent
 cp .env.example .env
 # Edit .env with your credentials and model provider
 
-# 6. Run the agent
+# 7. Run the agent
 python main.py
 # Or run GUI: streamlit run streamlit_app.py
 ```
@@ -101,6 +109,9 @@ DB_HOST=localhost
 DB_NAME=streaming
 DB_USER=your_user
 DB_PASSWORD=your_password
+
+# RAG - Directory with PDF summaries (default: ../summaries)
+SUMMARIES_DIR=../summaries
 
 # Model Provider: 'ollama' or 'groq'
 MODEL_PROVIDER=ollama
